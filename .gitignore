@@ -1,0 +1,15 @@
+exp/
+pretrained/
+priors/
+hsnet/
+data/
+logs/
+ori_sam2/
+ori_sam2_configs/
+tmp/
+vis/
+aa.py
+params.txt
+param2.txt
+sam2_hiera_s.yaml
+vis_result.png
