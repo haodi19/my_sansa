@@ -211,10 +211,10 @@ def get_logger():
 def get_save_path(args):
     # backbone_str = 'vgg' if args.vgg else 'resnet' + str(args.layers)
     backbone_str = args.sam2_type
-    # args.snapshot_path = 'exp/{}/{}/split{}/tmp/snapshot'.format(args.data_set, args.arch, args.split, backbone_str)
-    # args.result_path = 'exp/{}/{}/split{}/tmp/result'.format(args.data_set, args.arch, args.split, backbone_str)
-    args.snapshot_path = 'exp/{}/{}/split{}/{}_sem_384_adapter_10M/snapshot'.format(args.data_set, args.arch, args.split, backbone_str)
-    args.result_path = 'exp/{}/{}/split{}/{}_sem_384_adapter_10M/result'.format(args.data_set, args.arch, args.split, backbone_str)
+    args.snapshot_path = 'exp/{}/{}/split{}/tmp/snapshot'.format(args.data_set, args.arch, args.split, backbone_str)
+    args.result_path = 'exp/{}/{}/split{}/tmp/result'.format(args.data_set, args.arch, args.split, backbone_str)
+    # args.snapshot_path = 'exp/{}/{}/split{}/{}_sem_384_adapter_10M/snapshot'.format(args.data_set, args.arch, args.split, backbone_str)
+    # args.result_path = 'exp/{}/{}/split{}/{}_sem_384_adapter_10M/result'.format(args.data_set, args.arch, args.split, backbone_str)
 
 
 def get_train_val_set(args):

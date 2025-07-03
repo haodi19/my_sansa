@@ -15,8 +15,8 @@ else
   exit 1
 fi
 
-exp_dir=exp/${dataset}/${arch}/${exp_name}/${net}_sem_384_adapter_10M
-# exp_dir=exp/${dataset}/${arch}/${exp_name}/tmp
+# exp_dir=exp/${dataset}/${arch}/${exp_name}/${net}_sem_384_adapter_10M
+exp_dir=exp/${dataset}/${arch}/${exp_name}/tmp
 snapshot_dir=${exp_dir}/snapshot
 result_dir=${exp_dir}/result
 # config=config/${dataset}/${net}/2.1/${dataset}_${exp_name}_${net}_${postfix}.yaml

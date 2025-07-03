@@ -6,6 +6,8 @@ from torch.cuda.amp import autocast
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.modeling.backbones.sem_hieradet import AdaptFormerAdapter
 from sam2.utils.misc import load_video_frames_from_data
+from transformers import CLIPTokenizer, CLIPTextModel
+
 
 def weighted_dice_loss(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum", eps: float = 1e-8):
     target_seg = (target_seg == 1).float()  # B, H, W
@@ -96,6 +98,11 @@ class OneModel(nn.Module):
         self.sam2_weight = args.sam2_weight
         self.sam2_config = args.sam2_config
         self.sam2 = build_sam2_video_predictor(config_file=self.sam2_config, ckpt_path=self.sam2_weight, mode=None)
+        
+        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+        self.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+        self.text_model.eval()
+        self.text_model = self.text_model.to('cuda')
 
     def get_optim(self, model, args, LR, type = 'sam2'):
         if type == 'sam2':
@@ -146,7 +153,23 @@ class OneModel(nn.Module):
         #         for param in module.parameters():
         #             param.requires_grad = True
 
+    def encode_class_name(self, class_name: str) -> torch.Tensor:
+        """
+        将类名通过 CLIP 文本编码器转为特征向量（自动加提示词）
+        
+        Args:
+            class_name (str): 如 'cat', 'zebra', 'toaster'
             
+        Returns:
+            torch.Tensor: 文本特征 (512,)
+        """
+        prompt = f"A photo of a {class_name}"
+        inputs = self.tokenizer([prompt], padding=True, return_tensors="pt").to('cuda')
+        with torch.no_grad():
+            outputs = self.text_model(**inputs)
+            text_feature = outputs.last_hidden_state[:, 0, :]  # 取 [CLS] token
+            text_feature = F.normalize(text_feature, p=2, dim=-1)  # L2 归一化
+            return text_feature.squeeze(0)  # [512]
 
     def visualize_mask_on_image(self, image_tensor, mask_tensor, save_path='output.png', alpha=0.5):
         """
@@ -195,7 +218,7 @@ class OneModel(nn.Module):
         print(f"Saved visualization to {save_path}")
 
     @autocast()
-    def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None):
+    def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None):
         b, _, h, w = x.size()  # b=1, 3, H, W
         with torch.autocast("cuda", dtype=torch.bfloat16):
             s_x = s_x.view(-1, 3, h, w)  # b*s, 3, 512, 512

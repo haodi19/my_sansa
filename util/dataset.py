@@ -16,7 +16,6 @@ from .get_weak_anns import transform_anns
 
 IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
 
-
 def is_image_file(filename):
     filename_lower = filename.lower()
     return any(filename_lower.endswith(extension) for extension in IMG_EXTENSIONS)
@@ -159,6 +158,28 @@ class SemData(Dataset):
 
         print('sub_list: ', self.sub_list)
         print('sub_val_list: ', self.sub_val_list)
+        
+        if data_set == 'pascal':
+            self.class_names = [
+                'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat',
+                'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike', 'person',
+                'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'
+            ]
+        elif data_set == 'coco':    
+            self.class_names = [
+                "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+                "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+                "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
+                "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+                "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+                "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl",
+                "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+                "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet",
+                "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+                "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+                "hair drier", "toothbrush"
+            ]
+
 
         # @@@ For convenience, we skip the step of building datasets and instead use the pre-generated lists @@@
         # if self.mode == 'train':
@@ -229,7 +250,6 @@ class SemData(Dataset):
                     new_label_class.append(c)
         label_class = new_label_class
         assert len(label_class) > 0
-        
         class_chosen = label_class[random.randint(1, len(label_class)) - 1]
         target_pix = np.where(label == class_chosen)
         ignore_pix = np.where(label == 255)
@@ -309,8 +329,10 @@ class SemData(Dataset):
         for i in range(1, self.shot):
             s_y = torch.cat([s_ys[i].unsqueeze(0), s_y], 0)
 
+        
+        
         # Return
         if self.mode == 'train':
-            return image, label, s_x, s_y, subcls_list
+            return image, label, s_x, s_y, subcls_list, self.class_names[class_chosen-1]
         elif self.mode == 'val':
-            return image, label, s_x, s_y, subcls_list, raw_label
+            return image, label, s_x, s_y, subcls_list, raw_label, self.class_names[class_chosen-1]

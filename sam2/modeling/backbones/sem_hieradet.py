@@ -117,6 +117,7 @@ class AdaptFormerAdapter(nn.Module):
         self.non_linear_func = nn.ReLU()
         self.up_proj = nn.Linear(self.down_size, self.n_embd)
         self.dropout = dropout
+        self.adapter_type = adapter_type
 
         if adapter_type == "mlp":
             self.inner_mlp_pre = nn.Sequential(*[
@@ -132,7 +133,8 @@ class AdaptFormerAdapter(nn.Module):
             self.inner_mlp_pre = nn.Identity()
             self.inner_mlp_post = nn.Identity()
         else:
-            raise ValueError(f"Unsupported adapter_type: {adapter_type}")
+            pass
+            # raise ValueError(f"Unsupported adapter_type: {adapter_type}")
 
         if init_option == "lora":
             with torch.no_grad():
@@ -157,10 +159,16 @@ class AdaptFormerAdapter(nn.Module):
 
         x = self.down_proj(x)
         x = self.non_linear_func(x)
-        x = self.inner_mlp_pre(x)
+        
+        if self.adapter_type == "mlp":
+            x = self.inner_mlp_pre(x)
+            
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.up_proj(x)
-        x = self.inner_mlp_post(x)
+        
+        if self.adapter_type == "mlp":
+            x = self.inner_mlp_post(x)
+            
         x = x * self.scale
 
         if self.adapter_layernorm_option == 'out':
@@ -355,7 +363,8 @@ class Hiera(nn.Module):
                     init_option="lora",
                     num_inner_layers_pre=1,
                     num_inner_layers_post=3,
-                    adapter_type="mlp",  # or "group"
+                    # adapter_type="mlp",  # or "group"
+                    adapter_type="none",
                     adapter_scalar="0.1",
                     adapter_layernorm_option="none",
                 )

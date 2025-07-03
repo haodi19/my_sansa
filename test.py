@@ -259,7 +259,7 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
     iter_num = 0
 
     for e in range(db_epoch):
-        for i, (input, target, s_input, s_mask, subcls, ori_label) in enumerate(val_loader):
+        for i, (input, target, s_input, s_mask, subcls, ori_label, class_name) in enumerate(val_loader):
             if iter_num == 1 and warmup: break
 
             if iter_num * args.batch_size_val >= test_num:
@@ -278,12 +278,10 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
             with torch.no_grad():
                 with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
                     start_time = time.time()
-                    output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors)
+                    output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors, class_name=class_name)
                     # output: torch.Size([1, 1024, 1024])
                     model_time.update(time.time() - start_time)
                     # visualize_fewshot_seg(s_input[0], s_mask, input, output.cpu(), save_path='output/fewshot_vis.png')
-                    # import pdb
-                    # pdb.set_trace()
                     if args.ori_resize:
                         output = F.interpolate(output.unsqueeze(0), size=ori_label.size()[-2:], mode='bilinear', align_corners=True)
                         output = output.squeeze(0)

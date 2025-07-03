@@ -308,7 +308,7 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler):
     if main_process():
         print('Warmup: {}'.format(args.warmup))
 
-    for i, (input, target, s_input, s_mask, subcls) in enumerate(train_loader):
+    for i, (input, target, s_input, s_mask, subcls, class_name) in enumerate(train_loader):
         data_time.update(time.time() - end)
         current_iter = epoch * len(train_loader) + i + 1
 
@@ -321,7 +321,7 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler):
         target = target.cuda(non_blocking=True)
 
         with autocast():
-            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls)
+            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, class_name=class_name)
             loss = main_loss + args.aux_weight1 * aux_loss1 + args.aux_weight2 * aux_loss2
         optimizer.zero_grad()
         with torch.autograd.set_detect_anomaly(True):
@@ -475,7 +475,7 @@ def validate(val_loader, model, warmup=False):
     shot = args.shot  # shot
 
     for e in range(db_epoch):
-        for i, (input, target, s_input, s_mask, subcls, ori_label) in enumerate(val_loader):
+        for i, (input, target, s_input, s_mask, subcls, ori_label, class_name) in enumerate(val_loader):
             if iter_num == 1 and warmup: break
 
             if iter_num * args.batch_size_val >= test_num:
@@ -494,7 +494,7 @@ def validate(val_loader, model, warmup=False):
             start_time = time.time()
             with torch.no_grad():
                 with autocast():
-                    output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors)
+                    output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors, class_name=class_name)
                     model_time.update(time.time() - start_time)
 
                     if args.ori_resize:
