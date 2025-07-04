@@ -165,11 +165,11 @@ def main():
     # Val
     if args.evaluate:
         if args.resized_val:
-            # val_transform = transform.Compose([
-            #     transform.Resize(size=args.val_size),
-            #     transform.ToTensor()
-            #     ])
-            val_transform = ImageMaskTransform(img_size=args.val_size, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            val_transform = transform.Compose([
+                transform.Resize(size=args.val_size),
+                transform.ToTensor()
+                ])
+            # val_transform = ImageMaskTransform(img_size=args.val_size, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
             
         else:
@@ -282,6 +282,8 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
                     # output: torch.Size([1, 1024, 1024])
                     model_time.update(time.time() - start_time)
                     # visualize_fewshot_seg(s_input[0], s_mask, input, output.cpu(), save_path='output/fewshot_vis.png')
+                    # import pdb
+                    # pdb.set_trace()
                     if args.ori_resize:
                         output = F.interpolate(output.unsqueeze(0), size=ori_label.size()[-2:], mode='bilinear', align_corners=True)
                         output = output.squeeze(0)
