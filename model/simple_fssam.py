@@ -99,10 +99,23 @@ class OneModel(nn.Module):
         self.sam2_config = args.sam2_config
         self.sam2 = build_sam2_video_predictor(config_file=self.sam2_config, ckpt_path=self.sam2_weight, mode=None)
         
-        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-        self.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.text_model.eval()
-        self.text_model = self.text_model.to('cuda')
+        # self.use_text_prompt = args.use_text_prompt
+        self.use_text_prompt = True
+        
+        if self.use_text_prompt:       
+            self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+            self.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+            self.text_model.eval()
+            # self.text_model = self.text_model.to('cuda')
+            
+            in_dim = 512
+            out_dim = 256
+            self.text_fc = nn.Sequential(
+                nn.Linear(in_dim, in_dim),   # 保持512维
+                nn.ReLU(inplace=True),
+                nn.Linear(in_dim, out_dim),  # 映射到256维
+                nn.Dropout(0.0)
+            )
 
     def get_optim(self, model, args, LR, type = 'sam2'):
         if type == 'sam2':
@@ -118,9 +131,33 @@ class OneModel(nn.Module):
                 [
                     {'params': model.sam2.image_encoder.trunk.blocks[46].adapter.parameters()},
                     {'params': model.sam2.image_encoder.trunk.blocks[47].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[45].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[44].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
+                    # {'params': model.sam2.sam_mask_decoder.parameters()},
+                    # {'params': model.sam2.memory_encoder.parameters()},
+                    # {'params': model.sam2.memory_attention.parameters()},
                     # {'params': model.sam2.image_encoder.trunk.parameters()},
                     # {'params': model.sam2.image_encoder.trunk.blocks[3].mlp.layers[0].parameters()},
                     # {'params': model.sam2.image_encoder.trunk.abcd.parameters()},
+                ],
+                lr=LR,
+                weight_decay=args.weight_decay
+            )
+        elif type == 'sansa_text':
+            optimizer = torch.optim.AdamW(
+                [
+                    {'params': model.sam2.image_encoder.trunk.blocks[46].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[47].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[45].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[44].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
+                    {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
+                    {'params': model.text_fc.parameters()},
+                    {'params': model.sam2.sam_mask_decoder.parameters()},
+                    # {'params': model.sam2.memory_encoder.parameters()},
+                    # {'params': model.sam2.memory_attention.parameters()},
                 ],
                 lr=LR,
                 weight_decay=args.weight_decay
@@ -146,30 +183,47 @@ class OneModel(nn.Module):
                 # if 'trunk.blocks.3.mlp.layers.0' not in name:
                 # if 'abcd' not in name:
                     param.requires_grad = False
+                    
+            # for param in model.sam2.sam_mask_decoder.parameters():
+            #     param.requires_grad = True
+            # for param in model.sam2.memory_encoder.parameters():
+            #     param.requires_grad = True
+            # for param in model.sam2.memory_attention.parameters():
+            #     param.requires_grad = True
+        elif type == 'sansa_text':
+            # 全部参数先冻结
+            for name, param in model.named_parameters():
+                if 'adapter' not in name and 'text_fc' not in name:
+                    param.requires_grad = False
 
+            for param in model.sam2.sam_mask_decoder.parameters():
+                param.requires_grad = True
+                
         # # 单独解冻 Hiera trunk 中的 Adapter 参数
         # for name, module in model.sam2.image_encoder.trunk.named_modules():
         #     if isinstance(module, AdaptFormerAdapter):
         #         for param in module.parameters():
         #             param.requires_grad = True
-
-    def encode_class_name(self, class_name: str) -> torch.Tensor:
-        """
-        将类名通过 CLIP 文本编码器转为特征向量（自动加提示词）
         
+    def encode_class_names(self, class_names) -> torch.Tensor:
+        """        
         Args:
-            class_name (str): 如 'cat', 'zebra', 'toaster'
-            
+            class_names (List[str] or Tuple[str]): 例如 ['cat', 'dog', 'zebra']
+        
         Returns:
-            torch.Tensor: 文本特征 (512,)
+            torch.Tensor: shape 为 [N, 512]，L2 normalized 特征
         """
-        prompt = f"A photo of a {class_name}"
-        inputs = self.tokenizer([prompt], padding=True, return_tensors="pt").to('cuda')
+        # 自动构造带提示词的输入文本
+        prompts = [f"A photo of a {name}" for name in class_names]
+        
+        # 编码
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to('cuda')
         with torch.no_grad():
             outputs = self.text_model(**inputs)
-            text_feature = outputs.last_hidden_state[:, 0, :]  # 取 [CLS] token
-            text_feature = F.normalize(text_feature, p=2, dim=-1)  # L2 归一化
-            return text_feature.squeeze(0)  # [512]
+            text_features = outputs.last_hidden_state[:, 0, :]  # 取每个输入的 [CLS] token，shape [N, 512]
+            text_features = F.normalize(text_features, p=2, dim=-1)  # L2 normalize
+        
+        return text_features  # shape [N, 512]
 
     def visualize_mask_on_image(self, image_tensor, mask_tensor, save_path='output.png', alpha=0.5):
         """
@@ -236,8 +290,7 @@ class OneModel(nn.Module):
             # obtain query and support features
             _, _, qry_feats, qry_poss, qry_sizes = self.sam2.get_image_feature_batch(x)
             _, _, sup_feats, sup_poss, sup_sizes = self.sam2.get_image_feature_batch(s_x)
-            # import pdb
-            # pdb.set_trace()
+
             # qry_feats/sup_feats: list,多尺度特征
             # qry_feats[0]: torch.Size([65536, 1, 32])
             # qry_feats[1]: torch.Size([16384, 1, 64])
@@ -255,12 +308,16 @@ class OneModel(nn.Module):
             # import pdb
             # pdb.set_trace()
             # self.visualize_mask_on_image(s_x, sup_fg_preds, save_path='vis_result.png')
+  
+            if self.use_text_prompt:
+                text_features = self.encode_class_names(class_name)
+                text_features = self.text_fc(text_features)  # 输出为 [bs, 256]
 
             # propagate prompted frames (直接用SAM2的propagate_in_video_batch)
             sup_mask = F.interpolate(s_mask[:, 0, ...].unsqueeze(1).float(), size=qry_sizes[-1], mode='nearest')
             low_res_masks, output_query, pix_feat_with_mem = self.sam2.propagate_in_video_batch_mine(
                 qry_feats, qry_poss, qry_sizes,
-                sup_fg_mem_feats, sup_fg_mem_poss, sup_fg_preds, sup_fg_obj_ptrs,
+                sup_fg_mem_feats, sup_fg_mem_poss, sup_fg_preds, sup_fg_obj_ptrs, text_features = text_features
             )
             output_query = output_query.squeeze(1)
 

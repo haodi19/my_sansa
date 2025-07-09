@@ -261,6 +261,7 @@ class SAM2Base(torch.nn.Module):
         mask_inputs=None,
         high_res_features=None,
         multimask_output=False,
+        text_inputs = None
     ):
         """
         Forward SAM prompt encoders and mask heads.
@@ -341,6 +342,7 @@ class SAM2Base(torch.nn.Module):
             points=(sam_point_coords, sam_point_labels),
             boxes=None,
             masks=sam_mask_prompt,
+            text_embeds = text_inputs.unsqueeze(1) if text_inputs is not None else text_inputs
         )
         (
             low_res_multimasks,

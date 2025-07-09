@@ -338,7 +338,8 @@ class Hiera(nn.Module):
         self.blocks = nn.ModuleList()
         
         # 添加适配器的起始位置（最后两层）
-        adapter_start_idx = depth - 2  # e.g., total depth - 
+        # adapter_start_idx = depth - 2  # e.g., total depth - 
+        adapter_start_idx = depth - 6  # e.g., total depth - 
 
         for i in range(depth):
             dim_out = embed_dim

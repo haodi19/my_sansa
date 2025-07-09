@@ -879,6 +879,7 @@ class SAM2VideoPredictor(SAM2Base):
         sup_preds,
         sup_obj_ptr,
         prior=None,
+        text_features = None
     ):
         B = feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
@@ -992,6 +993,7 @@ class SAM2VideoPredictor(SAM2Base):
             mask_inputs=mask_inputs,
             high_res_features=high_res_features,
             multimask_output=multimask_output,
+            text_inputs = text_features
         )
         (
             _,
