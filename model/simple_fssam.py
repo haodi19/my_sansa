@@ -9,70 +9,161 @@ from sam2.utils.misc import load_video_frames_from_data
 from transformers import CLIPTokenizer, CLIPTextModel
 
 
-def weighted_dice_loss(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum", eps: float = 1e-8):
+# def weighted_dice_loss2(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum", eps: float = 1e-8):
+#     target_seg = (target_seg == 1).float()  # B, H, W
+#     n, h, w = target_seg.shape
+#     prediction = prediction.reshape(-1, h, w)  # B, H, W
+#     target_seg = target_seg.reshape(-1, h, w)
+#     prediction = torch.sigmoid(prediction)
+#     prediction = prediction.reshape(-1, h * w)  # B, H*W
+#     target_seg = target_seg.reshape(-1, h * w)
+#     loss_part = (prediction ** 2).sum(dim=-1) + (target_seg ** 2).sum(dim=-1)
+#     loss = 1 - 2 * (target_seg * prediction).sum(dim=-1) / torch.clamp(loss_part, min=eps)
+#     loss = loss * weighted_val
+#     if reduction == "sum":
+#         loss = loss.sum() / n
+#     elif reduction == "mean":
+#         loss = loss.mean()
+#     return loss
+
+def weighted_dice_loss(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum",
+                       eps: float = 1e-8, ignore_index: int = 255):
+    # 创建 valid mask（不是 ignore_index 的地方才算）
+    valid_mask = (target_seg != ignore_index)  # B, H, W
+
+    # 只考虑前景 class == 1 的部分
     target_seg = (target_seg == 1).float()  # B, H, W
+    valid_mask = valid_mask.float()
+
     n, h, w = target_seg.shape
-    prediction = prediction.reshape(-1, h, w)  # B, H, W
+    prediction = prediction.reshape(-1, h, w)
     target_seg = target_seg.reshape(-1, h, w)
+    valid_mask = valid_mask.reshape(-1, h, w)
+
     prediction = torch.sigmoid(prediction)
-    prediction = prediction.reshape(-1, h * w)  # B, H*W
+
+    # 应用 valid mask
+    prediction = prediction * valid_mask
+    target_seg = target_seg * valid_mask
+
+    prediction = prediction.reshape(-1, h * w)
     target_seg = target_seg.reshape(-1, h * w)
-    loss_part = (prediction ** 2).sum(dim=-1) + (target_seg ** 2).sum(dim=-1)
-    loss = 1 - 2 * (target_seg * prediction).sum(dim=-1) / torch.clamp(loss_part, min=eps)
+    valid_mask = valid_mask.reshape(-1, h * w)
+
+    # 计算 Dice loss（只考虑 valid 区域）
+    inter = (target_seg * prediction).sum(dim=-1)
+    denom = (prediction ** 2).sum(dim=-1) + (target_seg ** 2).sum(dim=-1)
+
+    # 修正 denominator：防止全为 ignore 导致 denom = 0
+    loss = 1 - 2 * inter / torch.clamp(denom, min=eps)
     loss = loss * weighted_val
+
     if reduction == "sum":
         loss = loss.sum() / n
     elif reduction == "mean":
         loss = loss.mean()
+
     return loss
 
 class WeightedDiceLoss(nn.Module):
-    def __init__(self, weighted_val: float = 1.0, reduction: str = "sum"):
+    def __init__(self, weighted_val: float = 1.0, reduction: str = "sum", ignore_index: int = 255):
         super(WeightedDiceLoss, self).__init__()
         self.weighted_val = weighted_val
         self.reduction = reduction
+        self.ignore_index = ignore_index
 
     def forward(self, prediction, target_seg):
-        return weighted_dice_loss(prediction, target_seg, self.weighted_val, self.reduction)
+        return weighted_dice_loss(
+            prediction, target_seg,
+            weighted_val=self.weighted_val,
+            reduction=self.reduction,
+            ignore_index=self.ignore_index
+        )
     
+# def weighted_bce_loss2(
+#     prediction,
+#     target_seg,
+#     weighted_val: float = 1.0,
+#     reduction: str = "sum",
+#     eps: float = 1e-8
+# ):  
+#     if prediction.dim() == 4:
+#         prediction = prediction.squeeze(1)
+#     if target_seg.dim() == 4:
+#         target_seg = target_seg.squeeze(1)
+
+#     target_seg = (target_seg == 1).float()
+#     n, h, w = target_seg.shape
+    
+#     # prediction = torch.sigmoid(prediction)
+#     prediction = prediction.reshape(-1, h * w)
+#     target_seg = target_seg.reshape(-1, h * w)
+
+#     bce = F.binary_cross_entropy_with_logits(prediction, target_seg, reduction="none")
+#     loss = bce * weighted_val
+
+#     if reduction == "sum":
+#         loss = loss.mean(1).sum() / n
+#     elif reduction == "mean":
+#         loss = loss.mean()
+#     return loss
+
 def weighted_bce_loss(
     prediction,
     target_seg,
     weighted_val: float = 1.0,
     reduction: str = "sum",
-    eps: float = 1e-8
+    eps: float = 1e-8,
+    ignore_index: int = 255
 ):  
     if prediction.dim() == 4:
         prediction = prediction.squeeze(1)
     if target_seg.dim() == 4:
         target_seg = target_seg.squeeze(1)
 
+    # Create valid mask
+    valid_mask = (target_seg != ignore_index).float()
+
+    # Convert foreground target
     target_seg = (target_seg == 1).float()
-    n, h, w = target_seg.shape
     
-    prediction = torch.sigmoid(prediction)
+    n, h, w = target_seg.shape
     prediction = prediction.reshape(-1, h * w)
     target_seg = target_seg.reshape(-1, h * w)
+    valid_mask = valid_mask.reshape(-1, h * w)
 
+    # Compute BCE
     bce = F.binary_cross_entropy_with_logits(prediction, target_seg, reduction="none")
+
+    # Mask out ignore pixels
+    bce = bce * valid_mask
+
+    # Apply weighting
     loss = bce * weighted_val
 
     if reduction == "sum":
-        loss = loss.mean(1).sum() / n
+        # mean over valid pixels per sample, then sum over batch
+        valid_pixel_count = valid_mask.sum(dim=1).clamp(min=eps)
+        loss = loss.sum(dim=1) / valid_pixel_count  # mean per image
+        loss = loss.sum() / n
     elif reduction == "mean":
-        loss = loss.mean()
+        valid_pixel_count = valid_mask.sum().clamp(min=eps)
+        loss = loss.sum() / valid_pixel_count
+
     return loss
 
+
 class CombinedBCEDiceLoss(nn.Module):
-    def __init__(self, dice_weight: float = 1.0, bce_weight: float = 1.0, reduction: str = "sum"):
+    def __init__(self, dice_weight: float = 1.0, bce_weight: float = 1.0, reduction: str = "sum", ignore_index: int = 255):
         super(CombinedBCEDiceLoss, self).__init__()
         self.dice_weight = dice_weight
         self.bce_weight = bce_weight
         self.reduction = reduction
+        self.ignore_index = ignore_index
 
     def forward(self, prediction, target_seg, return_components=False):
-        dice = weighted_dice_loss(prediction, target_seg, weighted_val=1.0, reduction=self.reduction)
-        bce = weighted_bce_loss(prediction, target_seg, weighted_val=1.0, reduction=self.reduction)
+        dice = weighted_dice_loss(prediction, target_seg, weighted_val=1.0, reduction=self.reduction, ignore_index=self.ignore_index)
+        bce = weighted_bce_loss(prediction, target_seg, weighted_val=1.0, reduction=self.reduction, ignore_index=self.ignore_index)
         total = self.dice_weight * dice + self.bce_weight * bce
         if return_components:
             return total, dice.detach(), bce.detach()
