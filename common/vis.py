@@ -23,7 +23,7 @@ class Visualizer:
         cls.mean_img = [0.485, 0.456, 0.406]
         cls.std_img = [0.229, 0.224, 0.225]
         cls.to_pil = transforms.ToPILImage()
-        cls.vis_path = './vis/'
+        cls.vis_path = './vis0/'
         if not os.path.exists(cls.vis_path): os.makedirs(cls.vis_path)
 
     @classmethod
@@ -43,7 +43,8 @@ class Visualizer:
     @classmethod
     def to_numpy(cls, tensor, type):
         if type == 'img':
-            return np.array(cls.to_pil(cls.unnormalize(tensor))).astype(np.uint8)
+            # return np.array(cls.to_pil(cls.unnormalize(tensor))).astype(np.uint8)
+            return np.array(cls.to_pil(tensor*255)).astype(np.uint8)
         elif type == 'mask':
             return np.array(tensor).astype(np.uint8)
         else:

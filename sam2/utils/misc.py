@@ -288,11 +288,12 @@ def load_video_frames_from_data(
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[None, :, None, None].to(imgs_tensor.device)
     img_std = torch.tensor(img_std, dtype=torch.float32)[None, :, None, None].to(imgs_tensor.device)
 
-    images = imgs_tensor / 255.0
-    # normalize by mean and std
-    images -= img_mean
-    images /= img_std
-    return images
+    # images = imgs_tensor / 255.0
+    # # normalize by mean and std
+    # images -= img_mean
+    # images /= img_std
+    # return images
+    return imgs_tensor
 
 def load_video_frames_from_video_file(
     video_path,

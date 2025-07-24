@@ -100,7 +100,7 @@ class OneModel(nn.Module):
         self.sam2 = build_sam2_video_predictor(config_file=self.sam2_config, ckpt_path=self.sam2_weight, mode=None)
         
         # self.use_text_prompt = args.use_text_prompt
-        self.use_text_prompt = True
+        self.use_text_prompt = False
         
         if self.use_text_prompt:       
             self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
@@ -129,18 +129,22 @@ class OneModel(nn.Module):
         elif type == 'sansa':
             optimizer = torch.optim.AdamW(
                 [
-                    {'params': model.sam2.image_encoder.trunk.blocks[46].adapter.parameters()},
-                    {'params': model.sam2.image_encoder.trunk.blocks[47].adapter.parameters()},
-                    {'params': model.sam2.image_encoder.trunk.blocks[45].adapter.parameters()},
-                    {'params': model.sam2.image_encoder.trunk.blocks[44].adapter.parameters()},
-                    {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
-                    {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[46].adapter.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[47].adapter.parameters()},
+                    # {'params':  model.sam2.image_encoder.trunk.blocks[45].adapter.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[44].adapter.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
+                    
+                    # {'params': model.sam2.image_encoder.trunk.blocks[47].mlp.parameters()},
+                    # {'params': model.sam2.image_encoder.trunk.blocks[46].mlp.parameters()},
                     # {'params': model.sam2.sam_mask_decoder.parameters()},
                     # {'params': model.sam2.memory_encoder.parameters()},
                     # {'params': model.sam2.memory_attention.parameters()},
                     # {'params': model.sam2.image_encoder.trunk.parameters()},
                     # {'params': model.sam2.image_encoder.trunk.blocks[3].mlp.layers[0].parameters()},
                     # {'params': model.sam2.image_encoder.trunk.abcd.parameters()},
+                     {'params': model.sam2.image_encoder.trunk.blocks[i].adapter.parameters()} for i in range(24,47)  # 包括第0层到第46层
                 ],
                 lr=LR,
                 weight_decay=args.weight_decay
@@ -155,7 +159,7 @@ class OneModel(nn.Module):
                     {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
                     {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
                     {'params': model.text_fc.parameters()},
-                    {'params': model.sam2.sam_mask_decoder.parameters()},
+                    # {'params': model.sam2.sam_mask_decoder.parameters()},
                     # {'params': model.sam2.memory_encoder.parameters()},
                     # {'params': model.sam2.memory_attention.parameters()},
                 ],
@@ -179,6 +183,7 @@ class OneModel(nn.Module):
             # 全部参数先冻结
             for name, param in model.named_parameters():
                 if 'adapter' not in name:
+                # if 'adapter' not in name and '46.mlp' not in name and "47.mlp" not in name:
                 # if 'trunk' not in name:
                 # if 'trunk.blocks.3.mlp.layers.0' not in name:
                 # if 'abcd' not in name:
@@ -196,8 +201,8 @@ class OneModel(nn.Module):
                 if 'adapter' not in name and 'text_fc' not in name:
                     param.requires_grad = False
 
-            for param in model.sam2.sam_mask_decoder.parameters():
-                param.requires_grad = True
+            # for param in model.sam2.sam_mask_decoder.parameters():
+            #     param.requires_grad = True
                 
         # # 单独解冻 Hiera trunk 中的 Adapter 参数
         # for name, module in model.sam2.image_encoder.trunk.named_modules():
@@ -272,7 +277,15 @@ class OneModel(nn.Module):
         print(f"Saved visualization to {save_path}")
 
     @autocast()
-    def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None):
+    def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None, multi_frame_training=False):
+        if multi_frame_training:
+            return  self.forward_multi_frame(
+                s_x=s_x, s_y=s_y, x=x, y_m=y_m, cat_idx=cat_idx, class_name=class_name
+            )
+        # x:torch.Size([bs, 3, H, W])
+        # s_x:torch.Size([bs, shot, 3, H, W])
+        # s_y:torch.Size([bs, shot, H, W])
+        # y_m:torch.Size([bs, H, W])
         b, _, h, w = x.size()  # b=1, 3, H, W
         with torch.autocast("cuda", dtype=torch.bfloat16):
             s_x = s_x.view(-1, 3, h, w)  # b*s, 3, 512, 512
@@ -295,12 +308,10 @@ class OneModel(nn.Module):
             # qry_feats[0]: torch.Size([65536, 1, 32])
             # qry_feats[1]: torch.Size([16384, 1, 64])
             # qry_feats[2]: torch.Size([4096, 1, 256])
-            # qry_feats[3]: torch.Size([16384, 1, 64])
             # qry_sizes: [(256, 256), (128, 128), (64, 64)]
   
             # add support prompt - gt mask
             sup_fg = s_mask[:, 0, ...].unsqueeze(1)  # b, 1, h, w
-            
             (sup_fg_preds, sup_fg_obj_ptrs, sup_fg_mem_feats, sup_fg_mem_poss) = self.sam2.add_new_mask_batch(
                 sup_feats, sup_sizes, sup_fg
             )  # support fg gt memory, b, 64, 32, 
@@ -308,7 +319,8 @@ class OneModel(nn.Module):
             # import pdb
             # pdb.set_trace()
             # self.visualize_mask_on_image(s_x, sup_fg_preds, save_path='vis_result.png')
-  
+
+            text_features = None
             if self.use_text_prompt:
                 text_features = self.encode_class_names(class_name)
                 text_features = self.text_fc(text_features)  # 输出为 [bs, 256]
@@ -336,4 +348,99 @@ class OneModel(nn.Module):
                 # output_query = sam2_tmp.mask_refinement_batch(qry_feats2, qry_sizes2, low_res_masks).squeeze(1)
             
                 return output_query, None
+
+    @autocast()
+    def forward_multi_frame(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None):
+        b, _, h, w = x.size()
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            # flatten support
+            shot = s_x.size(1)
+            full_seq = torch.cat([s_x[:, 1:], x.unsqueeze(1)], dim=1)  # shape: [bs, shot, 3, H, W]
+            full_seq = full_seq.view(-1, 3, h, w)  # (bs*(shot)), 3, H, W
+            ref_frame = s_x[:, 0]  # b, 3, h, w
+            ref_mask = s_y[:, 0]  # b, h, w
+            target_gt = torch.cat([s_y[:, 1:], y_m.unsqueeze(1)], dim=1)  # bs, shot, h, w
+
+            ref_frame = load_video_frames_from_data(ref_frame, offload_video_to_cpu=False)  # b, 3, 512, 512
+            full_seq = load_video_frames_from_data(full_seq, offload_video_to_cpu=False)  # b*s, 3, 512, 512
+
+            # extract features
+            _, _, ref_feat, ref_pos, ref_sizes = self.sam2.get_image_feature_batch(ref_frame)
+            _, _, tgt_feat, tgt_pos, tgt_sizes = self.sam2.get_image_feature_batch(full_seq)
+
+            # init memory from ref frame
+            sup_fg = ref_mask.unsqueeze(1).float()  # b,1,h,w
+            sup_fg_preds, sup_fg_obj_ptrs, sup_fg_mem_feats, sup_fg_mem_poss = self.sam2.add_new_mask_batch(
+                ref_feat, ref_sizes, sup_fg
+            )
             
+            text_features = None
+            if self.use_text_prompt:
+                text_features = self.encode_class_names(class_name)
+                text_features = self.text_fc(text_features)  # 输出为 [bs, 256]
+
+            # memory containers
+            memory_bank = {
+                0: {
+                    "maskmem_features": sup_fg_mem_feats,
+                    "maskmem_pos_enc": [sup_fg_mem_poss[-1]],
+                    "pred_masks": sup_fg_preds,
+                    "obj_ptr": sup_fg_obj_ptrs,
+                }
+            }
+
+            # for losses
+            all_preds = []
+            losses = []
+            dice_vals = []
+            bce_vals = []
+
+            for j in range(shot):  # loop over [s_x[1:], x]
+                idx = j  # time index
+                # slice features for current frame
+                qry_feat = [f[:,j*b:(j+1)*b] for f in tgt_feat]
+                qry_pos = [p[:,j*b:(j+1)*b] for p in tgt_pos]
+                qry_gt = target_gt[:, j]
+
+                # gather memory entries
+                mem_feats = torch.cat([v["maskmem_features"] for v in memory_bank.values()], dim=0)
+                mem_pos = torch.cat([v["maskmem_pos_enc"][-1] for v in memory_bank.values()], dim=0)
+                mem_preds = torch.cat([v["pred_masks"] for v in memory_bank.values()], dim=0)
+                mem_ptrs = torch.cat([v["obj_ptr"] for v in memory_bank.values()], dim=0)
+
+                # propagate
+                low_res_mask, output_query, pix_feat_with_mem = self.sam2.propagate_in_video_batch_mine_multi_frame(
+                    qry_feat, qry_pos, tgt_sizes,
+                    mem_feats, [mem_pos], mem_preds, mem_ptrs,
+                    text_features=None
+                )
+                output_query = output_query.squeeze(1)  # [bs, h, w]
+                all_preds.append(output_query)
+
+                # loss
+                if self.training:
+                    loss, dice, bce = self.criterion(output_query, qry_gt.float(), return_components=True)
+                    losses.append(loss)
+                    dice_vals.append(dice)
+                    bce_vals.append(bce)
+
+                sup_fg = output_query.unsqueeze(1)
+                # update memory using predicted mask
+                # pred_mask_up = F.interpolate(output_query.unsqueeze(1), size=ref_sizes[-1], mode='nearest')
+                # pred_mask_up = pred_mask_up.detach()
+                fg_preds, obj_ptrs, mem_feats_new, mem_pos_new = self.sam2.add_new_mask_batch(
+                    qry_feat, tgt_sizes, sup_fg
+                )
+
+                memory_bank[idx + 1] = {
+                    "maskmem_features": mem_feats_new,
+                    "maskmem_pos_enc": [mem_pos_new[-1]],
+                    "pred_masks": fg_preds,
+                    "obj_ptr": obj_ptrs
+                }
+
+            if self.training:
+                return all_preds, torch.stack(losses).mean(), torch.zeros_like(losses[0]), torch.zeros_like(losses[0]), \
+                    torch.stack(dice_vals).mean(), torch.stack(bce_vals).mean()
+            else:
+                return all_preds, None

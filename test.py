@@ -122,6 +122,7 @@ class ImageMaskTransform:
         ])
         self.mask_transform = transforms.Compose([
             transforms.Resize((img_size, img_size), interpolation=Image.NEAREST),
+            # transforms.ToTensor(),
             transforms.PILToTensor(),  # 不除以255，输出 LongTensor（如果是L模式）
         ])
 
@@ -166,8 +167,10 @@ def main():
     if args.evaluate:
         if args.resized_val:
             val_transform = transform.Compose([
-                transform.Resize(size=args.val_size),
-                transform.ToTensor()
+                # transform.Resize(size=args.val_size),
+                transform.ToTensorAndNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transform.ResizeWithAspectAndPad2(size=args.val_size),
+                # transform.ToTensor()
                 ])
             # val_transform = ImageMaskTransform(img_size=args.val_size, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
@@ -284,8 +287,31 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
                     # visualize_fewshot_seg(s_input[0], s_mask, input, output.cpu(), save_path='output/fewshot_vis.png')
                     # import pdb
                     # pdb.set_trace()
+                    # if args.ori_resize:
+                    #     output = F.interpolate(output.unsqueeze(0), size=ori_label.size()[-2:], mode='bilinear', align_corners=True)
+                    #     output = output.squeeze(0)
+                    #     target = ori_label.long()
                     if args.ori_resize:
-                        output = F.interpolate(output.unsqueeze(0), size=ori_label.size()[-2:], mode='bilinear', align_corners=True)
+                        # 获取原始尺寸
+                        ori_h, ori_w = ori_label.size()[-2:]
+                        long_side = max(ori_h, ori_w)
+                        scale = 1024 / long_side
+                        new_h, new_w = int(ori_h * scale), int(ori_w * scale)
+
+                        # 计算 padding
+                        pad_h = 1024 - new_h
+                        pad_w = 1024 - new_w
+                        pad_top = pad_h // 2
+                        pad_left = pad_w // 2
+
+                        # output: [C, H, W] or [1, C, H, W]
+                        if output.dim() == 3:
+                            output = output.unsqueeze(0)
+
+                        # 去掉 padding
+                        output = output[:, :, pad_top:pad_top + new_h, pad_left:pad_left + new_w]
+                        # 插值还原回原始尺寸
+                        output = F.interpolate(output, size=(ori_h, ori_w), mode='bilinear', align_corners=True)
                         output = output.squeeze(0)
                         target = ori_label.long()
 
@@ -455,6 +481,41 @@ def visualize_fewshot_seg(support_image, support_mask, query_image, query_mask, 
     plt.savefig(save_path)
     plt.close()
     print(f"[✓] Visualization with red mask saved to {save_path}")
+
+
+def visualize_mask_on_image(image_tensor, mask_tensor, save_path="vis_result3.png", alpha=0.5):
+    """
+    将单通道mask叠加到原图上并保存。
+    参数:
+        image_tensor: torch.Tensor, shape [1, 3, H, W]
+        mask_tensor: torch.Tensor, shape [1, H, W]
+        save_path: str, 保存路径
+        alpha: float, mask透明度
+    """
+    assert image_tensor.shape[0] == 1 and image_tensor.shape[1] == 3, "image must be [1, 3, H, W]"
+    assert mask_tensor.shape[0] == 1, "mask must be [1, H, W]"
+
+    # 去掉 batch 维度并转换为 numpy
+    image_np = image_tensor.squeeze(0).cpu().numpy()  # [3, H, W]
+    image_np = np.transpose(image_np, (1, 2, 0))       # [H, W, 3]
+    image_np = (image_np * 255).astype(np.uint8) if image_np.max() <= 1.0 else image_np.astype(np.uint8)
+
+    mask_np = mask_tensor.squeeze(0).cpu().numpy()     # [H, W]
+    mask_np = (mask_np > 0).astype(np.uint8)           # 转为二值 mask
+
+    # 创建红色 mask 图层
+    red_mask = np.zeros_like(image_np)
+    red_mask[..., 0] = 255  # 红色通道
+
+    # 应用 alpha 叠加
+    overlay = np.where(mask_np[..., None] == 1,
+                       (alpha * red_mask + (1 - alpha) * image_np).astype(np.uint8),
+                       image_np)
+
+    # 保存结果
+    vis_image = Image.fromarray(overlay)
+    vis_image.save(save_path)
+    print(f"可视化结果已保存至：{save_path}")
 
 
 if __name__ == '__main__':

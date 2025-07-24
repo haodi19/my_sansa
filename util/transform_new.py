@@ -139,7 +139,88 @@ class Resize(object):
         image = cv2.resize(image, dsize=(self.size, self.size), interpolation=cv2.INTER_LINEAR)
         label = cv2.resize(label, dsize=(self.size, self.size), interpolation=cv2.INTER_NEAREST)
         return image, label
+    
+class ResizeWithAspectAndPad(object):
+    def __init__(self, size):
+        self.size = size  # 目标边长（长边缩放后，短边pad）
 
+    def __call__(self, image, label):
+        h, w = image.shape[:2]
+        scale = self.size / max(h, w)
+
+        # 缩放图像和标签
+        new_h, new_w = int(h * scale), int(w * scale)
+        image_resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        label_resized = cv2.resize(label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+        # 计算padding尺寸
+        pad_h = self.size - new_h
+        pad_w = self.size - new_w
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+
+        # 使用0进行padding（可根据需求改）
+        image_padded = cv2.copyMakeBorder(image_resized, pad_top, pad_bottom, pad_left, pad_right, 
+                                          borderType=cv2.BORDER_CONSTANT, value=0)
+        label_padded = cv2.copyMakeBorder(label_resized, pad_top, pad_bottom, pad_left, pad_right, 
+                                          borderType=cv2.BORDER_CONSTANT, value=255)  # 255常用于ignore_label
+
+        return image_padded, label_padded
+
+class ResizeWithAspectAndPad2(object):
+    def __init__(self, size):
+        self.size = size  # 最终输出大小（正方形）
+
+    def __call__(self, image, label):
+        import torch.nn.functional as F
+        # image: [C, H, W], float tensor
+        # label: [H, W], long tensor
+        assert isinstance(image, torch.Tensor) and isinstance(label, torch.Tensor)
+
+        c, h, w = image.shape
+        scale = self.size / max(h, w)
+        new_h, new_w = int(h * scale), int(w * scale)
+
+        # Resize
+        image = image.unsqueeze(0)  # [1, C, H, W]
+        image_resized = F.interpolate(image, size=(new_h, new_w), mode='bilinear', align_corners=True)
+        image_resized = image_resized.squeeze(0)
+
+        label = label.unsqueeze(0).unsqueeze(0).float()  # [1, 1, H, W]
+        label_resized = F.interpolate(label, size=(new_h, new_w), mode='nearest').squeeze(0).squeeze(0).long()
+
+        # Compute padding
+        pad_h = self.size - new_h
+        pad_w = self.size - new_w
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+
+        # Pad
+        image_padded = F.pad(image_resized, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+        label_padded = F.pad(label_resized, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=255)
+
+        return image_padded, label_padded
+
+class ToTensorAndNormalize(object):
+    def __init__(self, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, image, label):
+        # image: HWC, uint8
+        image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0  # [3, H, W], float32
+        label = torch.from_numpy(label).long()  # [H, W]
+
+        # normalize
+        mean = torch.tensor(self.mean).view(3, 1, 1)
+        std = torch.tensor(self.std).view(3, 1, 1)
+        image = (image - mean) / std
+
+        return image, label
 
 class test_Resize(object):
     # Resize the input to the given size, 'size' is a 2-element tuple or list in the order of (h, w).
@@ -327,6 +408,17 @@ class RandomHorizontalFlip(object):
         if random.random() < self.p:
             image = cv2.flip(image, 1)
             label = cv2.flip(label, 1)
+        return image, label
+
+class RandomHorizontalFlip2(object):
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, image, label):
+        # image: [C, H, W], label: [H, W]
+        if random.random() < self.p:
+            image = torch.flip(image, dims=[2])   # flip width (W) axis
+            label = torch.flip(label, dims=[1])   # flip width (W) axis
         return image, label
 
 

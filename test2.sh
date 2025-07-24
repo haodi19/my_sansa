@@ -23,5 +23,5 @@ python test.py \
         --ver_refine=v1 \
         --ver_dino=dinov2_vitb14 \
         --episode=1000 \
+        # --use_original_imgsize 
         # --visualize \
-        # --use_original_imgsize \

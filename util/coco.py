@@ -22,8 +22,6 @@ class DatasetCOCO(Dataset):
         self.base_path = os.path.join(datapath)
         self.transform = transform
         self.use_original_imgsize = use_original_imgsize
-        import pdb
-        pdb.set_trace()
         self.class_ids = self.build_class_ids()
         self.img_metadata_classwise = self.build_img_metadata_classwise()
         self.img_metadata = self.build_img_metadata()
@@ -39,11 +37,14 @@ class DatasetCOCO(Dataset):
         query_img = self.transform(query_img)
         query_mask = query_mask.float()
         if not self.use_original_imgsize:
-            query_mask = F.interpolate(query_mask.unsqueeze(0).unsqueeze(0).float(), query_img.size()[-2:], mode='nearest').squeeze()
+            query_mask = self.resize_and_pad_mask(query_mask, target_size=1024, pad_value=255)
+            # query_mask = F.interpolate(query_mask.unsqueeze(0).unsqueeze(0).float(), query_img.size()[-2:], mode='nearest').squeeze()
 
         support_imgs = torch.stack([self.transform(support_img) for support_img in support_imgs])
         for midx, smask in enumerate(support_masks):
-            support_masks[midx] = F.interpolate(smask.unsqueeze(0).unsqueeze(0).float(), support_imgs.size()[-2:], mode='nearest').squeeze()
+            # support_masks[midx] = F.interpolate(smask.unsqueeze(0).unsqueeze(0).float(), support_imgs.size()[-2:], mode='nearest').squeeze()
+            support_masks[midx] = self.resize_and_pad_mask(support_masks[midx], target_size=1024, pad_value=255)
+            
         support_masks = torch.stack(support_masks)
 
         batch = {'query_img': query_img,
@@ -110,3 +111,31 @@ class DatasetCOCO(Dataset):
             support_masks.append(support_mask)
 
         return query_img, query_mask, support_imgs, support_masks, query_name, support_names, class_sample, org_qry_imsize
+    
+    def resize_and_pad_mask(self, mask, target_size, pad_value=255):
+        """
+        mask: Tensor of shape [H, W] or [1, H, W] (values are class indices or binary)
+        target_size: int, 最终输出大小
+        """
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0)  # [1, H, W]
+
+        _, h, w = mask.shape
+        scale = target_size / max(h, w)
+        new_h, new_w = int(round(h * scale)), int(round(w * scale))
+
+        # resize using nearest
+        mask_resized = F.interpolate(mask.unsqueeze(0).float(), size=(new_h, new_w), mode='nearest').squeeze(0).long()  # [1, new_h, new_w] → [1, H, W]
+
+        # compute padding
+        pad_h = target_size - new_h
+        pad_w = target_size - new_w
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+
+        # pad with ignore index (e.g. 255)
+        mask_padded = F.pad(mask_resized, (pad_left, pad_right, pad_top, pad_bottom), value=pad_value)
+
+        return mask_padded.squeeze(0)  # [H, W]

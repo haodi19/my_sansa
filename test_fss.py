@@ -77,6 +77,33 @@ def get_model(args):
 
     return model, optimizer
 
+def restore_pred_mask(pred_mask, orig_size, target_size):
+    """
+    将预测的 pred_mask 从 padded square 恢复到原始尺寸。
+    
+    pred_mask: Tensor [B, 1, target_size, target_size]
+    orig_size: tuple (orig_h, orig_w) — 原始query图像的高宽
+    target_size: int — padded的目标尺寸
+    """
+    B, C, H, W = pred_mask.shape
+    assert H == target_size and W == target_size
+
+    orig_h, orig_w = orig_size
+    scale = target_size / max(orig_h, orig_w)
+    new_h, new_w = int(round(orig_h * scale)), int(round(orig_w * scale))
+
+    # 裁剪padding区域，居中
+    pad_h = target_size - new_h
+    pad_w = target_size - new_w
+    top = pad_h // 2
+    left = pad_w // 2
+    pred_mask_cropped = pred_mask[:, :, top:top+new_h, left:left+new_w]
+
+    # 插值还原到原始大小
+    pred_mask_restored = F.interpolate(pred_mask_cropped, size=(orig_h, orig_w), mode='bilinear', align_corners=True)
+
+    return pred_mask_restored  # shape: [B, 1, orig_h, orig_w]
+
 # ====== 测试流程，数据和评估部分用第一份代码 ======
 def test(model, dataloader, nshot, args):
     utils.fix_randseed(0)
@@ -111,7 +138,8 @@ def test(model, dataloader, nshot, args):
                 pred_mask = torch.sigmoid(output)
                 pred_mask = (pred_mask > 0.5).float()
                 # 保证 pred_mask 和 batch['query_mask'] 形状一致
-                pred_mask = F.interpolate(pred_mask.unsqueeze(1), size=batch['query_mask'].shape[-2:], mode='bilinear', align_corners=True)
+                # pred_mask = F.interpolate(pred_mask.unsqueeze(1), size=batch['query_mask'].shape[-2:], mode='bilinear', align_corners=True)
+                pred_mask = restore_pred_mask(pred_mask.unsqueeze(1), orig_size=batch['query_mask'].shape[-2:], target_size=1024)
                 pred_mask = pred_mask.squeeze(1)
 
         assert pred_mask.size() == batch['query_mask'].size()

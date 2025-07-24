@@ -196,7 +196,7 @@ def main():
                 transform.ToTensor()
                 ])
         if args.data_set == 'pascal' or args.data_set == 'coco':
-            val_data = dataset.SemData(split=args.split, shot=args.shot, data_root=args.data_root,
+            val_data = dataset.SemData(split=args.split, shot=1, data_root=args.data_root,
                                        data_list=args.val_list, transform=val_transform, mode='val',
                                        ann_type=args.ann_type, data_set=args.data_set, use_split_coco=args.use_split_coco)
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False,
@@ -250,7 +250,7 @@ def main():
         #         print(name)
 
         # ----------------------  TRAIN  ----------------------
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, val_loader, model, optimizer, epoch, scaler)
+        loss_train, mIoU_train, mAcc_train, allAcc_train = train_multi_frame(train_loader, val_loader, model, optimizer, epoch, scaler)
 
         if main_process() and args.viz:
             writer.add_scalar('FBIoU_train', mIoU_train, epoch_log)
@@ -294,7 +294,7 @@ def main():
         print('%s' % datetime.datetime.now())
 
 
-def train(train_loader, val_loader, model, optimizer, epoch, scaler):
+def train_multi_frame(train_loader, val_loader, model, optimizer, epoch, scaler):
     global best_miou, best_FBiou, best_piou, best_epoch, keep_epoch, val_num
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -331,26 +331,39 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler):
         target = target.cuda(non_blocking=True)
 
         with autocast():
-            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, class_name=class_name)
+            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(
+                s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, class_name=class_name, multi_frame_training=True
+            )
             loss = main_loss + args.aux_weight1 * aux_loss1 + args.aux_weight2 * aux_loss2
+
         optimizer.zero_grad()
         with torch.autograd.set_detect_anomaly(True):
             scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        
+
         n = input.size(0)  # batch_size
 
-        output = torch.sigmoid(output)
-        output[output >= 0.5] = 1
-        output[output < 0.5] = 0
+        # ✅ 多帧sigmoid & threshold
+        processed_outputs = []
+        for pred in output:
+            pred = torch.sigmoid(pred)
+            pred[pred >= 0.5] = 1
+            pred[pred < 0.5] = 0
+            processed_outputs.append(pred)
 
-        intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
-        intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
+        gt = torch.cat([s_mask[:, 1:], target.unsqueeze(1)], dim=1)  # [bs, shot, H, W]
+        # ✅ 多帧评价
+        for pred, gt_frame in zip(processed_outputs, gt.permute(1, 0, 2, 3)):  # [shot, bs, H, W]
+            gt_frame = gt_frame.squeeze(1)
+            inter, uni, tgt = intersectionAndUnionGPU(pred, gt_frame, args.classes, args.ignore_label)
+            inter, uni, tgt = inter.cpu().numpy(), uni.cpu().numpy(), tgt.cpu().numpy()
+            intersection_meter.update(inter)
+            union_meter.update(uni)
+            target_meter.update(tgt)
 
-        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)  # allAcc
-
+        # ✅ 记录损失
+        accuracy = sum(intersection_meter.val) / (sum(target_meter.val) + 1e-10)
         main_loss_meter.update(main_loss.item(), n)
         aux_loss_meter1.update(aux_loss1.item(), n)
         aux_loss_meter2.update(aux_loss2.item(), n)

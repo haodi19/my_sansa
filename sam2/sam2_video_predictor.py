@@ -938,8 +938,6 @@ class SAM2VideoPredictor(SAM2Base):
                 (1, out["obj_ptr"])  # 1 is only for the first frame now!!!!!! or use 1 for all frames
                 for t, out in ptr_cond_outputs.items()
             ]
-            # import pdb
-            # pdb.set_trace()
             if len(pos_and_ptrs) > 0:
                 pos_list, ptrs_list = zip(*pos_and_ptrs)
                 obj_ptrs = torch.stack(ptrs_list, dim=0)
@@ -1019,6 +1017,116 @@ class SAM2VideoPredictor(SAM2Base):
 
         return low_res_masks, high_res_masks, pix_feat_with_mem
     
+    
+    def propagate_in_video_batch_mine_multi_frame(
+        self,
+        feats,
+        poss,
+        sizes,
+        sup_mem_feats,
+        sup_mem_poss_dict,
+        sup_preds,
+        sup_obj_ptr,
+        prior=None,
+        text_features=None,
+    ):
+        B = feats[-1].size(1)
+        C = self.hidden_dim
+        H, W = sizes[-1]
+        shot = sup_mem_feats.size(0) // B
+
+        # reshape high-resolution features
+        high_res_features = [
+            x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
+            for x, s in zip(feats[:-1], sizes[:-1])
+        ]
+
+        # prepare memory + positional encoding
+        to_cat_memory, to_cat_memory_pos_embed = [], []
+        num_obj_ptr_tokens = 0
+
+        maskmem_enc = sup_mem_poss_dict[-1]
+        memory_feats = sup_mem_feats.view(shot, B, -1, H, W)
+        memory_poss = maskmem_enc.view(shot, B, -1, H, W)
+        memory_preds = sup_preds.view(shot, B, -1, H, W)
+        memory_ptrs = sup_obj_ptr.view(shot, B, -1)
+
+        for idx in range(memory_feats.size(0)):
+            to_cat_memory.append(memory_feats[idx].cuda(non_blocking=True).flatten(2).permute(2, 0, 1))  # [HW, B, C]
+            pos_enc = memory_poss[idx].flatten(2).permute(2, 0, 1)
+            pos_enc = pos_enc + self.maskmem_tpos_enc[self.num_maskmem - idx - 1]
+            to_cat_memory_pos_embed.append(pos_enc)
+
+        if self.use_obj_ptrs_in_encoder:
+            # memory_ptrs: [N, B, C] （假设每一帧都有一个 obj_ptr）
+            obj_ptrs = memory_ptrs  # [N, B, C]
+            obj_pos = torch.zeros_like(obj_ptrs)  # [N, B, C]
+
+            if self.mem_dim < C:
+                # C > mem_dim 情况下，做分组 reshape 和 repeat
+                N, B, C = obj_ptrs.shape
+                obj_ptrs = obj_ptrs.reshape(N, B, C // self.mem_dim, self.mem_dim)  # [N, B, C//mem_dim, mem_dim]
+                obj_ptrs = obj_ptrs.permute(0, 2, 1, 3).reshape(-1, B, self.mem_dim)  # [(N * C//mem_dim), B, mem_dim]
+
+                obj_pos = obj_pos.new_zeros(N, B, self.mem_dim)
+                obj_pos = obj_pos.repeat_interleave(C // self.mem_dim, dim=0)  # 同样扩展 pos
+
+            to_cat_memory.append(obj_ptrs)  # [(N * C//mem_dim), B, mem_dim] 或 [N, B, C]
+            to_cat_memory_pos_embed.append(obj_pos)  # 同样维度
+            num_obj_ptr_tokens = obj_ptrs.shape[0]
+        else:
+            num_obj_ptr_tokens = 0
+
+        memory = torch.cat(to_cat_memory, dim=0)
+        memory_pos_embed = torch.cat(to_cat_memory_pos_embed, dim=0)
+
+        # query features
+        pix_feat_with_mem = self.memory_attention(
+            curr=feats[-1:],
+            curr_pos=poss[-1:],
+            memory=memory,
+            memory_pos=memory_pos_embed,
+            num_obj_ptr_tokens=num_obj_ptr_tokens,
+        )
+        pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
+
+        # mask prediction
+        high_res_features = [
+            x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
+            for x, s in zip(feats[:-1], sizes[:-1])
+        ]
+
+        sam_outputs = self._forward_sam_heads(
+            backbone_features=pix_feat_with_mem,
+            point_inputs=None,
+            mask_inputs=prior,
+            high_res_features=high_res_features,
+            multimask_output=self._use_multimask(False, None),
+            text_inputs=text_features
+        )
+
+        (
+            _,
+            _,
+            _,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            _,
+        ) = sam_outputs
+
+        if self.fill_hole_area > 0:
+            low_res_masks = fill_holes_in_mask_scores(
+                low_res_masks, self.fill_hole_area
+            )
+            high_res_masks = F.interpolate(
+                low_res_masks,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        return low_res_masks, high_res_masks, pix_feat_with_mem
     
     # ========================================
     # Propagate prompted frames to unprompted frames
