@@ -463,7 +463,7 @@ class OneModel(nn.Module):
             sup_fg = ref_mask.unsqueeze(1).float()  # b,1,h,w
             valid_mask = (sup_fg == 255)
             
-            sup_fg[valid_mask] = 0  # 1, shot, H, W
+            sup_fg = sup_fg.masked_fill(valid_mask, 0) # 1, shot, H, W
             sup_fg_preds, sup_fg_obj_ptrs, sup_fg_mem_feats, sup_fg_mem_poss = self.sam2.add_new_mask_batch(
                 ref_feat, ref_sizes, sup_fg
             )
