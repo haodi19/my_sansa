@@ -519,7 +519,7 @@ class OneModel(nn.Module):
                     bce_vals.append(bce)
 
                 sup_fg = output_query.unsqueeze(1)
-                sup_fg[valid_mask] = 0 
+                sup_fg = sup_fg.masked_fill(valid_mask, 0)
                 # update memory using predicted mask
                 # pred_mask_up = F.interpolate(output_query.unsqueeze(1), size=ref_sizes[-1], mode='nearest')
                 # pred_mask_up = pred_mask_up.detach()
