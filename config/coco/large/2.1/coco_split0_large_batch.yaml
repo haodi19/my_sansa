@@ -9,6 +9,9 @@ Train:
   train_h: 1024
   train_w: 1024
   val_size: 1024
+  # train_h: 512
+  # train_w: 512
+  # val_size: 512
   scale_min: 0.8  # minimum random scale
   scale_max: 1.25 # maximum random scale
   rotate_min: -10  # minimum random rotate
@@ -50,6 +53,7 @@ Train:
   seed_deterministic: False
   zoom_factor: 8  # zoom factor for final prediction during training, be in [1, 2, 4, 8]
   training_type: sansa
+  # training_type: sansa_text
   # training_type: sam2
   
 Method:
@@ -62,8 +66,11 @@ Method:
   aux_weight2: 1.0
 
 Test_Finetune:
-  # weight: best_1shot.pth # load weight for fine-tuning or testing (such as train5_epoch_47.5_0.4926.pth)
+  weight: best_1shot.pth # load weight for fine-tuning or testing (such as train5_epoch_47.5_0.4926.pth)
   # weight: exp/coco/simple_fssam/split0/large_combinedloss2/snapshot/train_epoch_4.5_0.4084.pth
   # weight: exp/coco/simple_fssam/split0/large_sem/snapshot/train_epoch_22_0.4323.pth
-  weight: exp/coco/simple_fssam/split0/large_sem_384_adapter2/snapshot/train_epoch_9.5_0.4399.pth
+  # weight: exp/coco/simple_fssam/split0/large_sem_384_adapter2/snapshot/train_epoch_9.5_0.4399.pth
+  # weight: /hdd0/ljn/new_sam2/my_fssam/exp/coco/simple_fssam/split0/large_sem_384_6_adapter/snapshot/train_epoch_37.5_0.4799.pth
+  # weight: /hdd0/ljn/new_sam2/my_fssam/exp/coco/simple_fssam/split0/large_sem_384_6_adapter_text/snapshot/train_epoch_24.5_0.4813.pth
+  # weight: /hdd0/ljn/new_sam2/my_fssam/exp/coco/simple_fssam/split0/large_sem_384_24_adapter/snapshot/train_epoch_16.5_0.4871.pth
   ann_type: 'mask' # mask/bbox

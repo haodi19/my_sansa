@@ -49,8 +49,8 @@ Train:
   manual_seed: 321
   seed_deterministic: False
   zoom_factor: 8  # zoom factor for final prediction during training, be in [1, 2, 4, 8]
-  training_type: sansa
-  # training_type: sam2
+  # training_type: sansa
+  training_type: sam2
   
 Method:
   layers: 50  # Resnet in PSPNet
@@ -62,8 +62,8 @@ Method:
   aux_weight2: 1.0
 
 Test_Finetune:
-  # weight: best_1shot.pth # load weight for fine-tuning or testing (such as train5_epoch_47.5_0.4926.pth)
+  weight: best_1shot.pth # load weight for fine-tuning or testing (such as train5_epoch_47.5_0.4926.pth)
   # weight: exp/coco/simple_fssam/split0/large_combinedloss2/snapshot/train_epoch_4.5_0.4084.pth
   # weight: exp/coco/simple_fssam/split0/large_sem/snapshot/train_epoch_22_0.4323.pth
-  weight: exp/coco/simple_fssam/split0/large_sem_384_adapter2/snapshot/train_epoch_9.5_0.4399.pth
+  # weight: exp/coco/simple_fssam/split0/large_sem_384_adapter2/snapshot/train_epoch_9.5_0.4399.pth
   ann_type: 'mask' # mask/bbox

@@ -49,8 +49,8 @@ Train:
   manual_seed: 321
   seed_deterministic: False
   zoom_factor: 8  # zoom factor for final prediction during training, be in [1, 2, 4, 8]
-  training_type: sansa
-  # training_type: sam2
+  # training_type: sansa
+  training_type: sam2
     
 Method:
   layers: 50  # Resnet in PSPNet
