@@ -442,6 +442,10 @@ class OneModel(nn.Module):
 
     @autocast()
     def forward_multi_frame(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None):
+        # x: torch.Size([bs, 3, 1024, 1024])
+        # s_x: torch.Size([bs, shot, 3, 1024, 1024])
+        # s_y: torch.Size([bs, shot, 1024, 1024])
+        # y_m: torch.Size([bs, 1024, 1024])
         b, _, h, w = x.size()
         with torch.autocast("cuda", dtype=torch.bfloat16):
             # flatten support
@@ -491,9 +495,9 @@ class OneModel(nn.Module):
 
             for j in range(shot):  # loop over [s_x[1:], x]
                 idx = j  # time index
-                # slice features for current frame
-                qry_feat = [f[:,j*b:(j+1)*b] for f in tgt_feat]
-                qry_pos = [p[:,j*b:(j+1)*b] for p in tgt_pos]
+                # slice features for current 
+                qry_feat = [f[:,j::shot] for f in tgt_feat]
+                qry_pos = [p[:,j::shot] for p in tgt_pos]
                 qry_gt = target_gt[:, j]
 
                 # gather memory entries
@@ -539,3 +543,234 @@ class OneModel(nn.Module):
                     torch.stack(dice_vals).mean(), torch.stack(bce_vals).mean()
             else:
                 return all_preds, None
+
+
+def visualize_fewshot_seg(support_image, support_mask, query_image, query_mask, save_path='vis_fewshot.png',
+                           support_overlay_path='output/support_overlay.png',
+                           query_overlay_path='output/query_overlay.png',
+                           support_img_path='output/support_img.png',
+                           query_img_path='output/query_img.png'):
+    """
+    Visualize few-shot segmentation results with red-highlighted masks.
+
+    Args:
+        support_image (Tensor): [1, 3, H, W], 0–255 float or uint8
+        support_mask (Tensor): [1, 1, H, W], binary/int/float
+        query_image (Tensor): [1, 3, H, W], 0–255 float or uint8
+        query_mask (Tensor): [1, H, W], binary/int/float
+        save_path (str): File path to save the visualization
+    """
+    import torch
+    import matplotlib.pyplot as plt
+    import torchvision.transforms.functional as TF
+    import os
+    
+    def denormalize_image(tensor_img, mean, std):
+        """
+        将 normalize 过的图像还原为 0~255 范围的 RGB 图（float tensor -> uint8 numpy）
+        Args:
+            tensor_img: [1, 3, H, W] or [3, H, W]，值在 normalize 后的范围
+            mean, std: list of 3 float
+        Returns:
+            uint8 np.ndarray, shape [H, W, 3]
+        """
+        if tensor_img.dim() == 4:
+            tensor_img = tensor_img.squeeze(0)  # [3, H, W]
+        
+        mean = torch.tensor(mean).view(-1, 1, 1).to(tensor_img.device)
+        std = torch.tensor(std).view(-1, 1, 1).to(tensor_img.device)
+        
+        img = tensor_img * std + mean  # 还原
+        img = img.clamp(0, 1)  # 限制范围
+        img = (img * 255).byte().permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+        return img
+    
+    # Squeeze and move to CPU
+    support_image = support_image[0].cpu()
+    support_mask = support_mask[0][0].cpu().float()
+    query_image = query_image[0].cpu()
+    query_mask = query_mask[0].cpu().float()
+    
+    support_image = denormalize_image(
+        tensor_img=support_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    query_image = denormalize_image(
+        tensor_img=query_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+
+    # Normalize image if needed
+    if support_image.dtype == torch.float32 and support_image.max() > 1:
+        support_image = support_image / 255.0
+    if query_image.dtype == torch.float32 and query_image.max() > 1:
+        query_image = query_image / 255.0
+
+    # Binarize masks
+    support_mask = (support_mask > 0).float()
+    query_mask = (query_mask > 0).float()
+
+    # Convert to numpy for overlay
+    sup_img_np = TF.to_pil_image(support_image).convert("RGB")
+    qry_img_np = TF.to_pil_image(query_image).convert("RGB")
+    
+    from torchvision import transforms
+    to_tensor = transforms.ToTensor()
+
+    sup_img_np = to_tensor(sup_img_np)
+    qry_img_np = to_tensor(qry_img_np)
+
+    def overlay_red(image, mask, alpha=0.6):
+        """Overlay red on the mask region."""
+        red = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
+        return image * (1 - mask * alpha) + red * (mask * alpha)
+
+    support_overlay = overlay_red(sup_img_np, support_mask)
+    query_overlay = overlay_red(qry_img_np, query_mask)
+
+    # Convert back to PIL for display
+    from torchvision.transforms.functional import to_pil_image
+    support_overlay_pil = to_pil_image(support_overlay)
+    query_overlay_pil = to_pil_image(query_overlay)
+    support_img_pil = to_pil_image(sup_img_np)
+    query_img_pil = to_pil_image(qry_img_np)
+
+    # Plot
+    fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+
+    axs[0, 0].imshow(support_img_pil)
+    axs[0, 0].set_title('Support Image')
+    axs[0, 0].axis('off')
+
+    axs[1, 0].imshow(support_overlay_pil)
+    axs[1, 0].set_title('Support + Mask (Red)')
+    axs[1, 0].axis('off')
+
+    axs[0, 1].imshow(query_img_pil)
+    axs[0, 1].set_title('Query Image')
+    axs[0, 1].axis('off')
+
+    axs[1, 1].imshow(query_overlay_pil)
+    axs[1, 1].set_title('Query + Mask (Red)')
+    axs[1, 1].axis('off')
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(support_overlay_path), exist_ok=True)
+    os.makedirs(os.path.dirname(query_overlay_path), exist_ok=True)
+
+    support_overlay_pil.save(support_overlay_path)
+    query_overlay_pil.save(query_overlay_path)
+    
+    support_img_pil.save(support_img_path)
+    query_img_pil.save(query_img_path)
+    
+    plt.savefig(save_path)
+    plt.close()
+    print(f"[✓] Visualization with red mask saved to {save_path}")
+
+def visualize_token_pca_and_save_all(
+    feature_map,
+    orig_image_tensor,  # [1, 3, H, W]
+    save_dir=".",
+    basename="sample",
+    mask=None,
+    show=False
+):
+    """
+    生成 token PCA 可视化图，保存原图、PCA图、拼接图。
+
+    Args:
+        feature_map (torch.Tensor): shape [1, C, H, W]
+        orig_image_tensor (torch.Tensor): [1, 3, H, W] 原图 tensor，值在 [0, 1] 或 [0, 255]
+        save_dir (str): 保存文件夹
+        basename (str): 文件名前缀，如 "dog1"
+        mask (torch.Tensor): 可选，形状 [H, W]，token 选择区域
+        show (bool): 是否可视化显示图像
+    """
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from sklearn.decomposition import PCA
+    import cv2
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+    
+    def denormalize_image(tensor_img, mean, std):
+        """
+        将 normalize 过的图像还原为 0~255 范围的 RGB 图（float tensor -> uint8 numpy）
+        Args:
+            tensor_img: [1, 3, H, W] or [3, H, W]，值在 normalize 后的范围
+            mean, std: list of 3 float
+        Returns:
+            uint8 np.ndarray, shape [H, W, 3]
+        """
+        if tensor_img.dim() == 4:
+            tensor_img = tensor_img.squeeze(0)  # [3, H, W]
+        
+        mean = torch.tensor(mean).view(-1, 1, 1).to(tensor_img.device)
+        std = torch.tensor(std).view(-1, 1, 1).to(tensor_img.device)
+        
+        img = tensor_img * std + mean  # 还原
+        img = img.clamp(0, 1)  # 限制范围
+        img = (img * 255).byte().permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+        return img
+
+    # === 1. 保存原图 ===
+    orig_img = denormalize_image(
+        tensor_img=orig_image_tensor,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    orig_img_bgr = cv2.cvtColor(orig_img, cv2.COLOR_RGB2BGR)
+    orig_path = os.path.join(save_dir, f"{basename}_orig.png")
+    cv2.imwrite(orig_path, orig_img_bgr)
+
+    H_img, W_img = orig_img.shape[:2]
+
+    # === 2. 处理 feature map 进行 PCA 可视化 ===
+    B, C, H, W = feature_map.shape
+    assert B == 1
+    fmap = feature_map.squeeze(0).permute(1, 2, 0).contiguous()  # [H, W, C]
+    fmap_np = fmap.reshape(-1, C).cpu().numpy()  # [H*W, C]
+
+    if mask is not None:
+        mask = mask.squeeze()
+        assert mask.shape == (H, W)
+        fmap_np = fmap_np[mask.reshape(-1) > 0]
+
+    pca = PCA(n_components=3)
+    pca_feat = pca.fit_transform(fmap_np)  # [N, 3]
+    pca_feat -= pca_feat.min(0)
+    pca_feat /= (pca_feat.max(0) + 1e-5)
+
+    if mask is None:
+        rgb_map = pca_feat.reshape(H, W, 3)
+    else:
+        rgb_map = np.zeros((H * W, 3))
+        rgb_map[mask.reshape(-1) > 0] = pca_feat
+        rgb_map = rgb_map.reshape(H, W, 3)
+
+    # resize 回原图大小
+    rgb_map_up = cv2.resize(rgb_map, (W_img, H_img), interpolation=cv2.INTER_NEAREST)
+    rgb_img = (rgb_map_up * 255).astype(np.uint8)
+    pca_img_bgr = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
+    pca_path = os.path.join(save_dir, f"{basename}_pca.png")
+    cv2.imwrite(pca_path, pca_img_bgr)
+
+    # === 3. 拼接图像（原图 | PCA）===
+    concat_img = np.concatenate([orig_img_bgr, pca_img_bgr], axis=1)
+    concat_path = os.path.join(save_dir, f"{basename}_concat.png")
+    cv2.imwrite(concat_path, concat_img)
+
+    # === 4. 显示（可选）===
+    if show:
+        plt.imshow(cv2.cvtColor(concat_img, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.title("Original | Token PCA")
+        plt.show()
+
+    print(f"✅ Saved to:\n - {orig_path}\n - {pca_path}\n - {concat_path}")
