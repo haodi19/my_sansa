@@ -30,12 +30,6 @@ def get_cfg():
                         help='config file')
     parser.add_argument('--opts', help='see config/ade20k/ade20k_pspnet50.yaml for all options', default=None,
                         nargs=argparse.REMAINDER)
-    parser.add_argument('--num_refine', type=int, default=3,
-                        help='number of memory refinement')
-    parser.add_argument('--ver_refine', type=str, default="v1",
-                        help='version of memory refinement')
-    parser.add_argument('--ver_dino', type=str, default="dinov2_vitb14", choices=["dinov2_vitb14", "dinov2_vitl14", "dinov2_vitg14"],
-                        help="version of dino")
     parser.add_argument('--episode', help='number of test episodes', type=int, default=1000)
 
     # 你可以根据需要添加第二份代码模型需要的其它参数

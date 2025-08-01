@@ -50,12 +50,6 @@ def get_parser():
     parser.add_argument('--viz', action='store_true', default=False)
     parser.add_argument('--config', type=str, default='config/coco/coco_split3_resnet50.yaml',
                         help='config file')  # coco/coco_split0_resnet50.yaml
-    parser.add_argument('--num_refine', type=int, default=3,
-                        help='number of memory refinement')
-    parser.add_argument('--ver_refine', type=str, default="v1",
-                        help='version of memory refinement')
-    parser.add_argument('--ver_dino', type=str, default="dinov2_vitb14", choices=["dinov2_vitb14", "dinov2_vitl14", "dinov2_vitg14"],
-                        help="version of dino")
     parser.add_argument('--episode', help='number of test episodes', type=int, default=1000)
     parser.add_argument('--opts', help='see config/ade20k/ade20k_pspnet50.yaml for all options', default=None,
                         nargs=argparse.REMAINDER)
@@ -92,7 +86,7 @@ def get_model(args):
             except RuntimeError:                   # 1GPU loads mGPU model
                 for key in list(new_param.keys()):
                     new_param[key[7:]] = new_param.pop(key)
-                model.load_state_dict(new_param)
+                model.load_state_dict(new_param, strict=False)
             optimizer.load_state_dict(checkpoint['optimizer'])
             logger.info("=> loaded checkpoint '{}' (epoch {})".format(weight_path, checkpoint['epoch']))
         else:
@@ -184,6 +178,10 @@ def main():
             val_data = dataset.SemData(split=args.split, shot=args.shot, data_root=args.data_root,
                                        data_list=args.val_list, transform=val_transform, mode='val',
                                        ann_type=args.ann_type, data_set=args.data_set, use_split_coco=args.use_split_coco)
+            # val_data = dataset.SemData(split=args.split, shot=5, data_root=args.data_root,
+            #                 data_list=args.val_list, transform=val_transform, mode='val',
+            #                 ann_type=args.ann_type, data_set=args.data_set, use_split_coco=args.use_split_coco)
+            
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False,
                                                  num_workers=args.workers, pin_memory=False, sampler=None)
 
@@ -282,11 +280,12 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
                 with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
                     start_time = time.time()
                     output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors, class_name=class_name)
+                    # output, priors = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=subcls, priors=priors, class_name=class_name, multi_frame_training=True)
                     # output: torch.Size([1, 1024, 1024])
                     model_time.update(time.time() - start_time)
-                    # visualize_fewshot_seg(s_input[0], s_mask, input, output.cpu(), save_path='output/fewshot_vis.png')
-                    # import pdb
-                    # pdb.set_trace()
+                    visualize_fewshot_seg(s_input[0], s_mask, input, output.cpu(), save_path='output/fewshot_vis.png')
+                    import pdb
+                    pdb.set_trace()
                     # if args.ori_resize:
                     #     output = F.interpolate(output.unsqueeze(0), size=ori_label.size()[-2:], mode='bilinear', align_corners=True)
                     #     output = output.squeeze(0)
@@ -321,7 +320,6 @@ def validate(val_loader, model, val_seed, episode, warmup=False):
                     label = target.clone()
                     label[label == 255] = 0
                     loss = criterion(output, label.float())
-        
             output = torch.sigmoid(output)
             output[output >= 0.5] = 1
             output[output < 0.5] = 0
@@ -407,11 +405,44 @@ def visualize_fewshot_seg(support_image, support_mask, query_image, query_mask, 
     import matplotlib.pyplot as plt
     import torchvision.transforms.functional as TF
     import os
+    
+    def denormalize_image(tensor_img, mean, std):
+        """
+        将 normalize 过的图像还原为 0~255 范围的 RGB 图（float tensor -> uint8 numpy）
+        Args:
+            tensor_img: [1, 3, H, W] or [3, H, W]，值在 normalize 后的范围
+            mean, std: list of 3 float
+        Returns:
+            uint8 np.ndarray, shape [H, W, 3]
+        """
+        if tensor_img.dim() == 4:
+            tensor_img = tensor_img.squeeze(0)  # [3, H, W]
+        
+        mean = torch.tensor(mean).view(-1, 1, 1).to(tensor_img.device)
+        std = torch.tensor(std).view(-1, 1, 1).to(tensor_img.device)
+        
+        img = tensor_img * std + mean  # 还原
+        img = img.clamp(0, 1)  # 限制范围
+        img = (img * 255).byte().permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+        return img
+    
     # Squeeze and move to CPU
     support_image = support_image[0].cpu()
     support_mask = support_mask[0][0].cpu().float()
     query_image = query_image[0].cpu()
     query_mask = query_mask[0].cpu().float()
+    
+    support_image = denormalize_image(
+        tensor_img=support_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    query_image = denormalize_image(
+        tensor_img=query_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 
     # Normalize image if needed
     if support_image.dtype == torch.float32 and support_image.max() > 1:
