@@ -9,9 +9,8 @@ class Evaluator:
         cls.ignore_index = 255
 
     @classmethod
-    def classify_prediction(cls, pred_mask, batch):
-        gt_mask = batch.get('query_mask')
-
+    def classify_prediction(cls, pred_mask, batch, gt_frame=None):
+        gt_mask = batch.get('query_mask') if gt_frame is None else gt_frame
         # Apply ignore_index in PASCAL-5i masks (following evaluation scheme in PFE-Net (TPAMI 2020))
         query_ignore_idx = batch.get('query_ignore_idx')
         if query_ignore_idx is not None:
@@ -19,8 +18,8 @@ class Evaluator:
             query_ignore_idx *= cls.ignore_index
             gt_mask = gt_mask + query_ignore_idx
             pred_mask[gt_mask == cls.ignore_index] = cls.ignore_index
-
-        # pred_mask[gt_mask == cls.ignore_index] = cls.ignore_index
+        else:
+            pred_mask[gt_mask == cls.ignore_index] = cls.ignore_index
         # import pdb
         # pdb.set_trace()
         # compute intersection and union of each episode in a batch

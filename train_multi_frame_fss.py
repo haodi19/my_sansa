@@ -219,7 +219,7 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
                            index_split=args.index_split, warmup=args.warmup, warmup_step=len(train_loader) // 2)
 
         with autocast():
-            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=cat_idx)
+            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=cat_idx, multi_frame_training=True)
             loss = main_loss
 
         optimizer.zero_grad()
@@ -227,18 +227,27 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
             scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        
-        output = torch.sigmoid(output)
-        output = (output > 0.5).float()
-        output = restore_pred_mask(output.unsqueeze(1), orig_size=batch['query_mask'].shape[-2:], target_size=1024)
-        output = output.squeeze(1)
 
-        area_inter, area_union = Evaluator.classify_prediction(output.clone(), batch)
-        average_meter.update(area_inter, area_union, batch['class_id'], loss.detach().clone())
+        n = input.size(0)
+        # ✅ 多帧sigmoid & threshold
+        processed_outputs = []
+        for pred in output:
+            pred = torch.sigmoid(pred)
+            pred[pred >= 0.5] = 1
+            pred[pred < 0.5] = 0
+            processed_outputs.append(pred)
+            
+        gt = torch.cat([s_mask[:, 1:], target.unsqueeze(1)], dim=1)  # [bs, shot, H, W]
+        # ✅ 多帧评价
+        for pred, gt_frame in zip(processed_outputs, gt.permute(1, 0, 2, 3)):  # [shot, bs, H, W]
+            gt_frame = gt_frame.squeeze(1)
+            area_inter, area_union = Evaluator.classify_prediction(pred.clone(), batch, gt_frame)
+            average_meter.update(area_inter, area_union, batch['class_id'], loss.detach().clone())
+
         if main_process():
             average_meter.write_process(i, len(train_loader), epoch, write_batch_idx=50)
 
-        n = input.size(0)
+
         # main_loss_meter.update(main_loss.item(), n)
         # dice_loss_meter.update(dice_loss_val.item(), n)
         # bce_loss_meter.update(bce_loss_val.item(), n)
