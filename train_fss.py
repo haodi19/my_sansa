@@ -289,12 +289,12 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
 def main():
     global args
     args = get_parser()
-    Logger.initialize(args, training=True)
     args.distributed = torch.cuda.device_count() > 1
 
     if main_process():
         print(args)
-
+        Logger.initialize(args, training=True)
+        
     if args.manual_seed is not None:
         setup_seed(args.manual_seed, args.seed_deterministic)
 

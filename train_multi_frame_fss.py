@@ -298,11 +298,11 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
 def main():
     global args
     args = get_parser()
-    Logger.initialize(args, training=True)
     args.distributed = torch.cuda.device_count() > 1
 
     if main_process():
         print(args)
+        Logger.initialize(args, training=True)
 
     if args.manual_seed is not None:
         setup_seed(args.manual_seed, args.seed_deterministic)
@@ -318,7 +318,7 @@ def main():
     # ======== 数据加载 ==========
     FSSDataset.initialize(img_size=1024, datapath=args.data_root, use_original_imgsize=args.ori_resize)
     train_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size, args.nworker, args.split, 'trn', args.shot)
-    val_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'val', args.shot)
+    val_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'val', 1)
 
     # ======== 评估器/可视化器 ==========
     Evaluator.initialize()
