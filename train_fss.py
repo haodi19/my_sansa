@@ -260,12 +260,15 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
         #                     loss_meter=loss_meter
         #                 ))
 
-        # 每半个epoch测试一次
-        if (i + 1) % (len(train_loader) // 2) == 0:
-            if (i + 1) == (len(train_loader) // 2) and main_process():
-                Logger.info('==== Half-epoch Test ====')
-            elif main_process():
-                Logger.info('==== Full-epoch Test ====')
+        if (i + 1) % (len(train_loader) // 10) == 0:
+            # if (i + 1) == (len(train_loader) // 2) and main_process():
+            #     Logger.info('==== Half-epoch Test ====')
+            # elif main_process():
+            #     Logger.info('==== Full-epoch Test ====')
+            if main_process():
+                epoch_idx = (i + 1) // (len(train_loader) // 10)
+                Logger.info(f'==== {epoch_idx}-epoch Test ====')
+                # Logger.info('==== Full-epoch Test ====')
             miou, fb_iou = test(model, val_loader, args.shot, args)
             if main_process():
                 Logger.info('Epoch mIoU: {:.4f}, FB-IoU: {:.4f}'.format(miou, fb_iou))

@@ -43,6 +43,16 @@ class AverageMeter:
                   self.union_buf.index_select(1, self.class_ids_interest).sum(dim=1)).mean() * 100
 
         return miou, fb_iou
+    
+    def get_classwise_iou(self):
+        "Returns a list of per-class IoU (%) for interested classes"
+        iou = self.intersection_buf.float() / \
+            torch.max(torch.stack([self.union_buf, self.ones]), dim=0)[0]
+
+        iou = iou.index_select(1, self.class_ids_interest)  # shape: [2, num_interest_classes]
+        classwise_iou = iou[1] * 100  # query set iou
+
+        return classwise_iou.tolist()  # return as list of floats
 
     def write_result(self, split, epoch):
         iou, fb_iou = self.compute_iou()
