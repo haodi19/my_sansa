@@ -749,8 +749,6 @@ class OneModel(nn.Module):
                 )
                 
                 if self.use_sem_visual_encoder:
-                    import pdb
-                    pdb.set_trace()
                     # target_size = self.sem_visual_model.visual.image_size  # 336
                     # q_sem_encoder_x = F.interpolate(x, size=target_size, mode="bicubic", align_corners=False)    \     
                     # qry_out = self.encode_with_clip(x)
