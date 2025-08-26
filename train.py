@@ -242,9 +242,6 @@ def main():
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
-        # for name, param in model.named_parameters():
-        #     print(f"Name: {name}, Shape: {param.shape}, Requires grad: {param.requires_grad}")
-
         # for name, module in model.named_modules():
         #     if isinstance(module, nn.Linear):
         #         print(name)

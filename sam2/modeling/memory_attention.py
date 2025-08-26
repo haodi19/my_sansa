@@ -118,10 +118,10 @@ class MemoryAttention(nn.Module):
 
     def forward(
         self,
-        curr: torch.Tensor,  # self-attention inputs
-        memory: torch.Tensor,  # cross-attention inputs
-        curr_pos: Optional[Tensor] = None,  # pos_enc for self-attention inputs
-        memory_pos: Optional[Tensor] = None,  # pos_enc for cross-attention inputs
+        curr: torch.Tensor,  # self-attention inputs, list,[0]:torch.Size([4096, bs, 256])
+        memory: torch.Tensor,  # cross-attention inputs, torch.Size([4100, bs, 64]) 4096+4 obj_token
+        curr_pos: Optional[Tensor] = None,  # pos_enc for self-attention inputs, list,[0]:torch.Size([4096, bs, 256])
+        memory_pos: Optional[Tensor] = None,  # pos_enc for cross-attention inputs, torch.Size([4100, bs, 64]) 4096+4 obj_token
         num_obj_ptr_tokens: int = 0,  # number of object pointer *tokens*
     ):
         if isinstance(curr, list):

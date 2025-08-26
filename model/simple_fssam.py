@@ -6,9 +6,8 @@ from torch.cuda.amp import autocast
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.modeling.backbones.sem_hieradet import AdaptFormerAdapter
 from sam2.utils.misc import load_video_frames_from_data
-from transformers import CLIPTokenizer, CLIPTextModel
-
-
+from transformers import CLIPTokenizer, CLIPTextModel, CLIPModel, CLIPProcessor, CLIPVisionModel
+import open_clip
 # def weighted_dice_loss2(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum", eps: float = 1e-8):
 #     target_seg = (target_seg == 1).float()  # B, H, W
 #     n, h, w = target_seg.shape
@@ -170,6 +169,110 @@ class CombinedBCEDiceLoss(nn.Module):
         else:
             return total
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SemanticTokenHead(nn.Module):
+    def __init__(self, input_dim=256, output_dim=256, downsample_factor=16):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        self.downsample_factor = downsample_factor  # 通常为16（从1024到64）
+
+    def forward(self, feat_flat, mask):
+        """
+        feat_flat: [4096, bs, 256] (flattened spatial tokens)
+        mask: [bs, H, W] (e.g., 1024 x 1024)
+
+        return:
+        semantic_token: [bs, output_dim]
+        """
+        B = mask.shape[0]
+        H_feat = W_feat = int(feat_flat.shape[0] ** 0.5)  # should be 64
+        D = feat_flat.shape[2]
+
+        # 1. Downsample mask to 64x64
+        mask_down = F.interpolate(mask.unsqueeze(1).float(), size=(H_feat, W_feat), mode='bilinear', align_corners=False)  # [B, 1, 64, 64]
+        mask_down = mask_down.squeeze(1)  # [B, 64, 64]
+        mask_flat = mask_down.view(B, -1)  # [B, 4096]
+
+        # 2. Apply mask to features
+        feat_flat = feat_flat.permute(1, 0, 2)  # [B, 4096, D]
+        masked_feat = feat_flat * mask_flat.unsqueeze(-1)  # [B, 4096, D]
+
+        # 3. Normalize by valid area and pool
+        eps = 1e-6
+        valid_area = mask_flat.sum(dim=1, keepdim=True) + eps  # [B, 1]
+        pooled = masked_feat.sum(dim=1) / valid_area  # [B, D]
+
+        # 4. Projection
+        sem_token = self.proj(pooled)  # [B, output_dim]
+
+        return sem_token
+    
+class ClipSemanticFusion(nn.Module):
+    """
+    Fuse a spatial feature map (maskmem_features) with a pooled CLIP token (pooled_clip_feature).
+    Supports at least 'concat_conv' fusion (concatenate token map with spatial features and use a 1x1 conv).
+    
+    Inputs:
+      - maskmem_features: Tensor of shape [B, C, H, W]
+      - pooled_clip_feature: Tensor of shape [B, C_clip]  (e.g., 1536 for CLIP)
+    
+    Output:
+      - fused features: Tensor of shape [B, C, H, W]  (same shape as maskmem_features)
+    
+    Notes:
+      - The module will project pooled_clip_feature to C channels via a Linear layer, then
+        expand spatially and concatenate along channel dimension before a 1x1 conv that
+        reduces back to C channels.
+      - This is a learnable fusion (more flexible than simple broadcasting addition).
+    """
+    def __init__(self, in_channels, clip_dim, mode="concat_conv", use_bn=False, activation=True):
+        super().__init__()
+        assert mode in ("concat_conv",), "Currently only 'concat_conv' is implemented."
+        self.mode = mode
+        self.in_channels = in_channels
+        self.clip_dim = clip_dim
+        self.use_bn = use_bn
+        self.activation = activation
+        
+        # Project CLIP pooled token to the same channel dimension as the feature map
+        self.clip_proj = nn.Linear(clip_dim, in_channels)
+        
+        # After concatenation we have 2*in_channels -> reduce back to in_channels
+        self.fusion_conv = nn.Conv2d(in_channels*2, in_channels, kernel_size=1, bias=not use_bn)
+        self.bn = nn.BatchNorm2d(in_channels) if use_bn else nn.Identity()
+        self.act = nn.ReLU(inplace=True) if activation else nn.Identity()
+    
+    def forward(self, maskmem_features: torch.Tensor, pooled_clip_feature: torch.Tensor):
+        """
+        maskmem_features: [B, C, H, W]
+        pooled_clip_feature: [B, clip_dim]
+        returns: [B, C, H, W]
+        """
+        B, C, H, W = maskmem_features.shape
+        assert C == self.in_channels, f"maskmem feature channels ({C}) != in_channels ({self.in_channels})"
+        assert pooled_clip_feature.shape[0] == B, "Batch size mismatch between features and pooled clip token"
+        assert pooled_clip_feature.shape[1] == self.clip_dim, f"Expected pooled_clip_feature dim {self.clip_dim}"
+        
+        # Project and reshape clip token -> [B, C, 1, 1], then expand to spatial size
+        clip_proj = self.clip_proj(pooled_clip_feature)   # [B, C]
+        clip_map = clip_proj.view(B, C, 1, 1).expand(-1, -1, H, W)  # [B, C, H, W]
+        
+        # Concatenate and fuse
+        x = torch.cat([maskmem_features, clip_map], dim=1)  # [B, 2C, H, W]
+        x = self.fusion_conv(x)                            # [B, C, H, W]
+        x = self.bn(x)
+        x = self.act(x)
+        return x
+
 # sam2_tmp = build_sam2_video_predictor(config_file='tmp.yaml', ckpt_path='/hdd0/ljn/new_sam2/my_fssam/pretrained/sam2.1_hiera_large.pt', mode=None)
 # sam2_tmp = sam2_tmp.to(torch.bfloat16).cuda()
 
@@ -190,6 +293,14 @@ class OneModel(nn.Module):
         self.sam2_config = args.sam2_config
         self.sam2 = build_sam2_video_predictor(config_file=self.sam2_config, ckpt_path=self.sam2_weight, mode=None)
         
+        self.use_sem_head = False
+        if self.use_sem_head:
+            self.sem_head = SemanticTokenHead(input_dim=256, output_dim=256)
+        
+        self.use_sem_visual_encoder = True
+        if self.use_sem_visual_encoder:
+            self.sem_visual_model, _, _ = open_clip.create_model_and_transforms("convnext_large_d_320", pretrained="laion/CLIP-convnext_large_d_320.laion2B-s29B-b131K-ft-soup/open_clip_pytorch_model.bin")
+            self.clip_fusion = ClipSemanticFusion(in_channels=64, clip_dim=1536, mode="concat_conv", use_bn=True)
         # self.use_text_prompt = args.use_text_prompt
         self.use_text_prompt = False
         
@@ -273,7 +384,8 @@ class OneModel(nn.Module):
         elif type == 'sansa':
             # 全部参数先冻结
             for name, param in model.named_parameters():
-                if 'adapter' not in name:
+                # if 'adapter' not in name:
+                if 'adapter' not in name and 'clip_fusion' not in name:
                 # if 'adapter' not in name and '46.mlp' not in name and "47.mlp" not in name:
                 # if 'trunk' not in name:
                 # if 'trunk.blocks.3.mlp.layers.0' not in name:
@@ -320,6 +432,73 @@ class OneModel(nn.Module):
             text_features = F.normalize(text_features, p=2, dim=-1)  # L2 normalize
         
         return text_features  # shape [N, 512]
+    
+    def encode_with_clip(self, x: torch.Tensor) -> dict:
+        """
+        输入:
+            x: [B,3,H,W]  已经过你自己的 transform (0.485/0.229 normalize, ResizeLongSideAndPad)
+            vision_model: open_clip.create_model_and_transforms() 得到的 model
+            img_size: CLIP 模型输入大小 (ConvNeXt 是 320)
+
+        输出:
+            dict:
+                'cls':   [B, hidden_dim]  全局向量
+                'dense': [B,C,Hf,Wf]      空间特征 (来自 trunk.norm_pre)
+        """
+
+        # 1. 还原成 0-1 图像
+        mean_old = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1,3,1,1)
+        std_old  = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1,3,1,1)
+        x = x * std_old + mean_old   # 还原到 [0,1]
+
+        # 3. 应用 CLIP 官方的 mean/std
+        mean_new = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=x.device).view(1,3,1,1)
+        std_new  = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=x.device).view(1,3,1,1)
+        x = (x - mean_new) / std_new
+
+        # 4. 前向提取特征
+        out = {}
+        with torch.no_grad():
+            trunk = self.sem_visual_model.visual.trunk
+            feats = trunk.stem(x)
+            out['stem'] = feats.contiguous()
+
+            for i in range(4):
+                feats = trunk.stages[i](feats)
+                out[f'res{i+2}'] = feats.contiguous()
+
+            feats = trunk.norm_pre(feats)
+            out['clip_vis_dense'] = feats.contiguous()
+
+        return out
+
+    def mask_pooling(self, x, mask):
+        """
+        Args:
+            x:    [B, C, H, W]
+            mask: [B, H, W]   (单mask版本)
+        Returns:
+            mask_pooled_x: [B, C]
+        """
+        B, C, H, W = x.shape
+
+        # 调整 mask 尺寸
+        if mask.shape[-2:] != (H, W):
+            mask = F.interpolate(
+                mask.unsqueeze(1),  # [B,1,H,W]
+                size=(H, W),
+                mode="nearest"
+            ).squeeze(1)  # [B,H,W]
+
+        with torch.no_grad():
+            mask = (mask > 0).to(x.dtype)  # [B,H,W]
+            denorm = mask.sum(dim=(-1, -2), keepdim=True) + 1e-8  # [B,1]
+
+        # einsum 聚合
+        # x: [B,C,H,W], mask: [B,H,W] -> [B,C]
+        pooled = torch.einsum("bchw,bhw->bc", x, mask / denorm)
+
+        return pooled
 
     def visualize_mask_on_image(self, image_tensor, mask_tensor, save_path='output.png', alpha=0.5):
         """
@@ -366,7 +545,7 @@ class OneModel(nn.Module):
         # 保存图片
         Image.fromarray(overlay).save(save_path)
         print(f"Saved visualization to {save_path}")
-
+    
     @autocast()
     def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None, multi_frame_training=False):
         if multi_frame_training:
@@ -394,13 +573,17 @@ class OneModel(nn.Module):
             # obtain query and support features
             _, _, qry_feats, qry_poss, qry_sizes = self.sam2.get_image_feature_batch(x)
             _, _, sup_feats, sup_poss, sup_sizes = self.sam2.get_image_feature_batch(s_x)
-
+            
             # qry_feats/sup_feats: list,多尺度特征
             # qry_feats[0]: torch.Size([65536, 1, 32])
             # qry_feats[1]: torch.Size([16384, 1, 64])
             # qry_feats[2]: torch.Size([4096, 1, 256])
             # qry_sizes: [(256, 256), (128, 128), (64, 64)]
-  
+            
+            if self.use_sem_head:
+                sem_token = self.sem_head(sup_feats[-1], s_mask.view(-1, h, w))  # [bs *shot, 256]
+                sem_token = sem_token.reshape(b, 1, -1)
+                
             # add support prompt - gt mask
             sup_fg = s_mask[:, 0, ...].unsqueeze(1)  # b, 1, h, w
             (sup_fg_preds, sup_fg_obj_ptrs, sup_fg_mem_feats, sup_fg_mem_poss) = self.sam2.add_new_mask_batch(
@@ -415,7 +598,23 @@ class OneModel(nn.Module):
             if self.use_text_prompt:
                 text_features = self.encode_class_names(class_name)
                 text_features = self.text_fc(text_features)  # 输出为 [bs, 256]
-
+            
+            if self.use_sem_visual_encoder:
+                # target_size = self.sem_visual_model.visual.image_size  # 336
+                # q_sem_encoder_x = F.interpolate(x, size=target_size, mode="bicubic", align_corners=False)    \     
+                qry_out = self.encode_with_clip(x)
+                sup_out = self.encode_with_clip(s_x)
+                # torch.Size([1, 1536, 32, 32]), 32 = 1024 / 32
+                qry_clip_vis_dense = qry_out['clip_vis_dense']
+                sup_clip_vis_dense = sup_out['clip_vis_dense']
+                # 下采样 mask 到特征图大小, torch.Size([bs*shot, 32, 32])
+                sup_mask_for_pooling = F.interpolate(s_mask.view(-1, 1, h, w).float(), size=sup_clip_vis_dense.shape[-2:], mode="nearest").squeeze(1)
+                # pooled_clip_feature: torch.Size([1, 1, 1536])
+                sup_pooled_clip_feature = self.mask_pooling(sup_clip_vis_dense, sup_mask_for_pooling)
+                # sup_fg_mem_feats: torch.Size([1, 64, 64, 64])
+                sup_fg_mem_feats = self.clip_fusion(sup_fg_mem_feats, sup_pooled_clip_feature)
+            # visualize_token_pca_and_save_all(feature_map=sup_fg_mem_feats.to(dtype=torch.float32), orig_image_tensor=s_x[0][0].unsqueeze(0),save_dir="./vis5",basename="dog1",show=False)
+            
             # propagate prompted frames (直接用SAM2的propagate_in_video_batch)
             sup_mask = F.interpolate(s_mask[:, 0, ...].unsqueeze(1).float(), size=qry_sizes[-1], mode='nearest')
             low_res_masks, output_query, pix_feat_with_mem = self.sam2.propagate_in_video_batch_mine(
@@ -468,14 +667,31 @@ class OneModel(nn.Module):
             valid_mask = (sup_fg == 255)
             
             sup_fg = sup_fg.masked_fill(valid_mask, 0) # 1, shot, H, W
+
             sup_fg_preds, sup_fg_obj_ptrs, sup_fg_mem_feats, sup_fg_mem_poss = self.sam2.add_new_mask_batch(
                 ref_feat, ref_sizes, sup_fg
             )
+            # sup_fg_mem_feats: torch.Size([bs, 64, 64, 64])
             
             text_features = None
             if self.use_text_prompt:
                 text_features = self.encode_class_names(class_name)
                 text_features = self.text_fc(text_features)  # 输出为 [bs, 256]
+
+            if self.use_sem_visual_encoder:
+                # target_size = self.sem_visual_model.visual.image_size  # 336
+                # q_sem_encoder_x = F.interpolate(x, size=target_size, mode="bicubic", align_corners=False)    \     
+                # qry_out = self.encode_with_clip(x)
+                sup_out = self.encode_with_clip(ref_frame)
+                # torch.Size([1, 1536, 32, 32]), 32 = 1024 / 32
+                # qry_clip_vis_dense = qry_out['clip_vis_dense']
+                sup_clip_vis_dense = sup_out['clip_vis_dense']
+                # 下采样 mask 到特征图大小, torch.Size([bs*shot, 32, 32])
+                sup_mask_for_pooling = F.interpolate(sup_fg.view(-1, 1, h, w).float(), size=sup_clip_vis_dense.shape[-2:], mode="nearest").squeeze(1)
+                # pooled_clip_feature: torch.Size([1, 1, 1536])
+                sup_pooled_clip_feature = self.mask_pooling(sup_clip_vis_dense, sup_mask_for_pooling)
+                # sup_fg_mem_feats: torch.Size([1, 64, 64, 64])
+                sup_fg_mem_feats = self.clip_fusion(sup_fg_mem_feats, sup_pooled_clip_feature)
 
             # memory containers
             memory_bank = {
@@ -496,6 +712,7 @@ class OneModel(nn.Module):
             for j in range(shot):  # loop over [s_x[1:], x]
                 idx = j  # time index
                 # slice features for current 
+                qry_frame = full_seq[j::shot]
                 qry_feat = [f[:,j::shot] for f in tgt_feat]
                 qry_pos = [p[:,j::shot] for p in tgt_pos]
                 qry_gt = target_gt[:, j]
@@ -530,6 +747,23 @@ class OneModel(nn.Module):
                 fg_preds, obj_ptrs, mem_feats_new, mem_pos_new = self.sam2.add_new_mask_batch(
                     qry_feat, tgt_sizes, sup_fg
                 )
+                
+                if self.use_sem_visual_encoder:
+                    import pdb
+                    pdb.set_trace()
+                    # target_size = self.sem_visual_model.visual.image_size  # 336
+                    # q_sem_encoder_x = F.interpolate(x, size=target_size, mode="bicubic", align_corners=False)    \     
+                    # qry_out = self.encode_with_clip(x)
+                    sup_out = self.encode_with_clip(qry_frame)
+                    # torch.Size([1, 1536, 32, 32]), 32 = 1024 / 32
+                    # qry_clip_vis_dense = qry_out['clip_vis_dense']
+                    sup_clip_vis_dense = sup_out['clip_vis_dense']
+                    # 下采样 mask 到特征图大小, torch.Size([bs*shot, 32, 32])
+                    sup_mask_for_pooling = F.interpolate(sup_fg.view(-1, 1, h, w).float(), size=sup_clip_vis_dense.shape[-2:], mode="nearest").squeeze(1)
+                    # pooled_clip_feature: torch.Size([1, 1, 1536])
+                    sup_pooled_clip_feature = self.mask_pooling(sup_clip_vis_dense, sup_mask_for_pooling)
+                    # sup_fg_mem_feats: torch.Size([1, 64, 64, 64])
+                    mem_feats_new = self.clip_fusion(mem_feats_new, sup_pooled_clip_feature)
 
                 memory_bank[idx + 1] = {
                     "maskmem_features": mem_feats_new,

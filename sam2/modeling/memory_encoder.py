@@ -165,10 +165,12 @@ class MemoryEncoder(nn.Module):
         # sigmoid, so that less domain shift from gt masks which are bool
         if not skip_mask_sigmoid:
             masks = F.sigmoid(masks)
+        # masks: torch.Size([1, 1, 1024, 1024]) -> torch.Size([1, 256, 64, 64])
         masks = self.mask_downsampler(masks)
 
         ## Fuse pix_feats and downsampled masks
         # in case the visual features are on CPU, cast them to CUDA
+        # pix_feat: torch.Size([1, 256, 64, 64])
         pix_feat = pix_feat.to(masks.device)
 
         x = self.pix_feat_proj(pix_feat)

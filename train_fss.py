@@ -321,6 +321,10 @@ def main():
     scaler = GradScaler()
     best_miou = 0.
     best_epoch = 0
+    
+    # for name, param in model.named_parameters():
+    #     print(f"Name: {name}, Shape: {param.shape}, Requires grad: {param.requires_grad}")
+    # exit(0)
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss, trn_miou, trn_fb_iou, best_miou = train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_miou)

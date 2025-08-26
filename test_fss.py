@@ -60,7 +60,7 @@ def get_model(args):
             except RuntimeError:  # 1GPU loads mGPU model
                 for key in list(new_param.keys()):
                     new_param[key[7:]] = new_param.pop(key)
-                model.load_state_dict(new_param)
+                model.load_state_dict(new_param, strict = False)
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})".format(weight_path, checkpoint['epoch']))
         else:

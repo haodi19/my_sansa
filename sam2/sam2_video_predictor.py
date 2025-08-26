@@ -978,7 +978,6 @@ class SAM2VideoPredictor(SAM2Base):
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
         pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
-        
         # pix_feat = feats[-1].permute(1, 2, 0)
         # pix_feat_with_mem = pix_feat.view(-1, self.hidden_dim, *sizes[-1])
 
@@ -1089,7 +1088,6 @@ class SAM2VideoPredictor(SAM2Base):
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
         pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
-
         # mask prediction
         high_res_features = [
             x.permute(1, 2, 0).view(x.size(1), x.size(2), *s)
