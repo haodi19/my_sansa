@@ -347,6 +347,12 @@ class OneModel(nn.Module):
                     # {'params': model.sam2.image_encoder.trunk.blocks[3].mlp.layers[0].parameters()},
                     # {'params': model.sam2.image_encoder.trunk.abcd.parameters()},
                      {'params': model.sam2.image_encoder.trunk.blocks[i].adapter.parameters()} for i in range(24,47)  # 包括第0层到第46层
+                ]+ [
+                    # clip_fusion 的参数
+                    {'params': self.clip_fusion.parameters()},
+                    # {'params': model.sam2.sam_mask_decoder.parameters()},
+                    # {'params': model.sam2.memory_encoder.parameters()},
+                    # {'params': model.sam2.memory_attention.parameters()},
                 ],
                 lr=LR,
                 weight_decay=args.weight_decay
@@ -361,9 +367,9 @@ class OneModel(nn.Module):
                     {'params': model.sam2.image_encoder.trunk.blocks[43].adapter.parameters()},
                     {'params': model.sam2.image_encoder.trunk.blocks[42].adapter.parameters()},
                     {'params': model.text_fc.parameters()},
-                    # {'params': model.sam2.sam_mask_decoder.parameters()},
+                    {'params': model.sam2.sam_mask_decoder.parameters()},
                     # {'params': model.sam2.memory_encoder.parameters()},
-                    # {'params': model.sam2.memory_attention.parameters()},
+                    {'params': model.sam2.memory_attention.parameters()},
                 ],
                 lr=LR,
                 weight_decay=args.weight_decay
@@ -392,12 +398,12 @@ class OneModel(nn.Module):
                 # if 'abcd' not in name:
                     param.requires_grad = False
                     
-            # for param in model.sam2.sam_mask_decoder.parameters():
-            #     param.requires_grad = True
+            for param in model.sam2.sam_mask_decoder.parameters():
+                param.requires_grad = True
             # for param in model.sam2.memory_encoder.parameters():
             #     param.requires_grad = True
-            # for param in model.sam2.memory_attention.parameters():
-            #     param.requires_grad = True
+            for param in model.sam2.memory_attention.parameters():
+                param.requires_grad = True
         elif type == 'sansa_text':
             # 全部参数先冻结
             for name, param in model.named_parameters():

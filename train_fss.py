@@ -325,6 +325,15 @@ def main():
     # for name, param in model.named_parameters():
     #     print(f"Name: {name}, Shape: {param.shape}, Requires grad: {param.requires_grad}")
     # exit(0)
+    
+    # # 获取 optimizer 中所有参数的 id
+    # optim_param_ids = set(id(p) for group in optimizer.param_groups for p in group['params'])
+    # print("\n=== Trainable parameters in optimizer ===")
+    # for name, param in model.named_parameters():
+    #     if id(param) in optim_param_ids:
+    #         print(name)
+    # print("=== End of trainable parameters ===\n")
+    # exit(0)
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss, trn_miou, trn_fb_iou, best_miou = train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_miou)
