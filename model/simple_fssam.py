@@ -3,11 +3,15 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
+from model.fusion import ClipResidualFusion, ClipSemanticFusion
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.modeling.backbones.sem_hieradet import AdaptFormerAdapter
 from sam2.utils.misc import load_video_frames_from_data
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPModel, CLIPProcessor, CLIPVisionModel
 import open_clip
+import os
+import matplotlib.pyplot as plt
+from torchvision.transforms.functional import to_pil_image
 # def weighted_dice_loss2(prediction, target_seg, weighted_val: float = 1.0, reduction: str = "sum", eps: float = 1e-8):
 #     target_seg = (target_seg == 1).float()  # B, H, W
 #     n, h, w = target_seg.shape
@@ -19,7 +23,8 @@ import open_clip
 #     loss_part = (prediction ** 2).sum(dim=-1) + (target_seg ** 2).sum(dim=-1)
 #     loss = 1 - 2 * (target_seg * prediction).sum(dim=-1) / torch.clamp(loss_part, min=eps)
 #     loss = loss * weighted_val
-#     if reduction == "sum":
+#     if reduction == "sum":c
+
 #         loss = loss.sum() / n
 #     elif reduction == "mean":
 #         loss = loss.mean()
@@ -215,63 +220,9 @@ class SemanticTokenHead(nn.Module):
         sem_token = self.proj(pooled)  # [B, output_dim]
 
         return sem_token
-    
-class ClipSemanticFusion(nn.Module):
-    """
-    Fuse a spatial feature map (maskmem_features) with a pooled CLIP token (pooled_clip_feature).
-    Supports at least 'concat_conv' fusion (concatenate token map with spatial features and use a 1x1 conv).
-    
-    Inputs:
-      - maskmem_features: Tensor of shape [B, C, H, W]
-      - pooled_clip_feature: Tensor of shape [B, C_clip]  (e.g., 1536 for CLIP)
-    
-    Output:
-      - fused features: Tensor of shape [B, C, H, W]  (same shape as maskmem_features)
-    
-    Notes:
-      - The module will project pooled_clip_feature to C channels via a Linear layer, then
-        expand spatially and concatenate along channel dimension before a 1x1 conv that
-        reduces back to C channels.
-      - This is a learnable fusion (more flexible than simple broadcasting addition).
-    """
-    def __init__(self, in_channels, clip_dim, mode="concat_conv", use_bn=False, activation=True):
-        super().__init__()
-        assert mode in ("concat_conv",), "Currently only 'concat_conv' is implemented."
-        self.mode = mode
-        self.in_channels = in_channels
-        self.clip_dim = clip_dim
-        self.use_bn = use_bn
-        self.activation = activation
-        
-        # Project CLIP pooled token to the same channel dimension as the feature map
-        self.clip_proj = nn.Linear(clip_dim, in_channels)
-        
-        # After concatenation we have 2*in_channels -> reduce back to in_channels
-        self.fusion_conv = nn.Conv2d(in_channels*2, in_channels, kernel_size=1, bias=not use_bn)
-        self.bn = nn.BatchNorm2d(in_channels) if use_bn else nn.Identity()
-        self.act = nn.ReLU(inplace=True) if activation else nn.Identity()
-    
-    def forward(self, maskmem_features: torch.Tensor, pooled_clip_feature: torch.Tensor):
-        """
-        maskmem_features: [B, C, H, W]
-        pooled_clip_feature: [B, clip_dim]
-        returns: [B, C, H, W]
-        """
-        B, C, H, W = maskmem_features.shape
-        assert C == self.in_channels, f"maskmem feature channels ({C}) != in_channels ({self.in_channels})"
-        assert pooled_clip_feature.shape[0] == B, "Batch size mismatch between features and pooled clip token"
-        assert pooled_clip_feature.shape[1] == self.clip_dim, f"Expected pooled_clip_feature dim {self.clip_dim}"
-        
-        # Project and reshape clip token -> [B, C, 1, 1], then expand to spatial size
-        clip_proj = self.clip_proj(pooled_clip_feature)   # [B, C]
-        clip_map = clip_proj.view(B, C, 1, 1).expand(-1, -1, H, W)  # [B, C, H, W]
-        
-        # Concatenate and fuse
-        x = torch.cat([maskmem_features, clip_map], dim=1)  # [B, 2C, H, W]
-        x = self.fusion_conv(x)                            # [B, C, H, W]
-        x = self.bn(x)
-        x = self.act(x)
-        return x
+
+
+
 
 # sam2_tmp = build_sam2_video_predictor(config_file='tmp.yaml', ckpt_path='/hdd0/ljn/new_sam2/my_fssam/pretrained/sam2.1_hiera_large.pt', mode=None)
 # sam2_tmp = sam2_tmp.to(torch.bfloat16).cuda()
@@ -300,7 +251,8 @@ class OneModel(nn.Module):
         self.use_sem_visual_encoder = True
         if self.use_sem_visual_encoder:
             self.sem_visual_model, _, _ = open_clip.create_model_and_transforms("convnext_large_d_320", pretrained="laion/CLIP-convnext_large_d_320.laion2B-s29B-b131K-ft-soup/open_clip_pytorch_model.bin")
-            self.clip_fusion = ClipSemanticFusion(in_channels=64, clip_dim=1536, mode="concat_conv", use_bn=True)
+            # self.clip_fusion = ClipSemanticFusion(in_channels=64, clip_dim=1536, mode="concat_conv", use_bn=True)
+            self.clip_fusion = ClipResidualFusion(in_channels=64, clip_dim=1536, proj_dim=64)
         # self.use_text_prompt = args.use_text_prompt
         self.use_text_prompt = False
         
@@ -398,12 +350,12 @@ class OneModel(nn.Module):
                 # if 'abcd' not in name:
                     param.requires_grad = False
                     
-            for param in model.sam2.sam_mask_decoder.parameters():
-                param.requires_grad = True
+            # for param in model.sam2.sam_mask_decoder.parameters():
+            #     param.requires_grad = True
             # for param in model.sam2.memory_encoder.parameters():
             #     param.requires_grad = True
-            for param in model.sam2.memory_attention.parameters():
-                param.requires_grad = True
+            # for param in model.sam2.memory_attention.parameters():
+            #     param.requires_grad = True
         elif type == 'sansa_text':
             # 全部参数先冻结
             for name, param in model.named_parameters():
@@ -552,6 +504,53 @@ class OneModel(nn.Module):
         Image.fromarray(overlay).save(save_path)
         print(f"Saved visualization to {save_path}")
     
+    def visualize_features(self, img_tensor, feat_tensor, save_path="vis_feature.png"):
+        """
+        可视化并保存图像特征
+        img_tensor: torch.Size([1, 3, H, W]) 输入图像
+        feat_tensor: torch.Size([C, H', W']) 或 torch.Size([1, C, H', W']) 特征图
+        """
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        # ---- 处理图像 ----
+        img = img_tensor.squeeze(0).cpu()
+        img = (img - img.min()) / (img.max() - img.min())
+        img_pil = to_pil_image(img)
+
+        # ---- 处理特征 ----
+        if feat_tensor.dim() == 3:  # [C, H', W']
+            feat_tensor = feat_tensor.unsqueeze(0)  # -> [1, C, H', W']
+
+        # 取通道平均 -> [1, 1, H', W']
+        feat = feat_tensor.mean(1, keepdim=True)
+
+        # 插值到原图大小
+        H, W = img_pil.size[1], img_pil.size[0]   # PIL.size 是 (W, H)
+        feat = F.interpolate(feat, size=(H, W), mode="bilinear", align_corners=False)
+        feat = feat.squeeze().cpu().numpy()
+        feat = (feat - feat.min()) / (feat.max() - feat.min())
+
+        # ---- 绘制对比图 ----
+        plt.figure(figsize=(10,5))
+
+        # 原图
+        plt.subplot(1,2,1)
+        plt.imshow(img_pil)
+        plt.axis("off")
+        plt.title("Original Image")
+
+        # 特征热力图叠加
+        plt.subplot(1,2,2)
+        plt.imshow(img_pil)
+        plt.imshow(feat, cmap="jet", alpha=0.5)
+        plt.axis("off")
+        plt.title("Feature Map")
+
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+        print(f"Feature visualization saved to {save_path}")
+    
     @autocast()
     def forward(self, x, s_x, s_y, y_m, cat_idx=None, priors=None, class_name=None, multi_frame_training=False):
         if multi_frame_training:
@@ -613,6 +612,9 @@ class OneModel(nn.Module):
                 # torch.Size([1, 1536, 32, 32]), 32 = 1024 / 32
                 qry_clip_vis_dense = qry_out['clip_vis_dense']
                 sup_clip_vis_dense = sup_out['clip_vis_dense']
+
+                # self.visualize_features(s_x, sup_clip_vis_dense, "output/feat_vis.png")
+                
                 # 下采样 mask 到特征图大小, torch.Size([bs*shot, 32, 32])
                 sup_mask_for_pooling = F.interpolate(s_mask.view(-1, 1, h, w).float(), size=sup_clip_vis_dense.shape[-2:], mode="nearest").squeeze(1)
                 # pooled_clip_feature: torch.Size([1, 1, 1536])
