@@ -39,14 +39,14 @@ class FSSDataset:
                                             ])
 
     @classmethod
-    def build_dataloader(cls, benchmark, bsz, nworker, fold, split, shot=1):
+    def build_dataloader(cls, benchmark, bsz, nworker, fold, split, shot=1, collate_fn = None):
         # Force randomness during training for diverse episode combinations
         # Freeze randomness during testing for reproducibility
         shuffle = split == 'trn'
         nworker = nworker if split == 'trn' else 0
 
         dataset = cls.datasets[benchmark](cls.datapath, fold=fold, transform=cls.transform, split=split, shot=shot, use_original_imgsize=cls.use_original_imgsize)
-        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker)
+        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker, collate_fn=collate_fn)
 
         return dataloader
     

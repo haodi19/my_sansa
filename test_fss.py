@@ -17,6 +17,22 @@ import torch.nn.functional as F
 from model import FSSAM, FSSAM5s, simple_fssam
 
 import time
+from test_vis import run_fss_gradcam_and_save
+from util.util import fss_collate_fn
+
+COCO_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
+    "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl",
+    "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+    "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet",
+    "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush"
+]
 
 # ====== 第二份代码的cfg合并逻辑 ======
 def get_cfg():
@@ -46,7 +62,7 @@ def get_model(args):
     model = eval(args.arch).OneModel(args)
     optimizer = model.get_optim(model, args, LR=args.base_lr, type=args.training_type)
     model = model.cuda()
-    print(args.use_original_imgsize)
+
     # Resume
     if args.weight:
         weight_path = args.weight
@@ -61,7 +77,7 @@ def get_model(args):
                 for key in list(new_param.keys()):
                     new_param[key[7:]] = new_param.pop(key)
                 model.load_state_dict(new_param, strict = False)
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})".format(weight_path, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(weight_path))
@@ -98,6 +114,24 @@ def restore_pred_mask(pred_mask, orig_size, target_size):
 
     return pred_mask_restored  # shape: [B, 1, orig_h, orig_w]
 
+def reshape_transform(tensor, height=64, width=64):
+    # tensor: torch.Size([1, 64, 64, 576])
+    result = tensor[:, :, :].reshape(tensor.size(0), height, width, tensor.size(3))
+
+    # Bring the channels to the first dimension,
+    # like in CNNs.
+    result = result.transpose(2, 3).transpose(1, 2)
+    return result
+
+def reshape_transform2(tensor, height=64, width=64):
+    # tensor: torch.Size([1, 64, 64, 576])
+    result = tensor[:, :, :].reshape(tensor.size(0), height, width, tensor.size(2))
+
+    # Bring the channels to the first dimension,
+    # like in CNNs.
+    result = result.transpose(2, 3).transpose(1, 2)
+    return result
+
 # ====== 测试流程，数据和评估部分用第一份代码 ======
 def test(model, dataloader, nshot, args):
     utils.fix_randseed(0)
@@ -108,33 +142,62 @@ def test(model, dataloader, nshot, args):
         batch = utils.to_cuda(batch)
 
         # 这里用第二份代码的推理方式
-        with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                support_imgs = batch['support_imgs']  # [B, shot, C, H, W]
-                support_masks = batch['support_masks']  # [B, shot, 1, H, W]
-                query_img = batch['query_img']  # [B, C, H, W]
-                # 你可能还需要 batch['query_mask'], batch['class_id'] 等
+        # with torch.no_grad():
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            support_imgs = batch['support_imgs']  # [B, shot, C, H, W]
+            support_masks = batch['support_masks']  # [B, shot, 1, H, W]
+            query_img = batch['query_img']  # [B, C, H, W]
+            query_clip_x = batch['query_clip_x']
+            support_clip_features = batch['support_clip_features']
+            query_img_f = batch['query_img_f']
+            # 你可能还需要 batch['query_mask'], batch['class_id']
+            
+            # 选一层或多层；必须是真正参与 forward 的模块（可是 backbone 的最后层、decoder 的某层等）
+            # target_layers = [model.module.sam2.image_encoder.trunk.blocks[-5].norm1]    # 仅示例，按你的模型实际层名来
+            target_layers = [model.module.sam2.memory_encoder.out_proj]
+            # target_layers = [model.module.sam2.memory_attention.norm]
 
-                output, _ = model(
-                    s_x=support_imgs,
-                    s_y=support_masks,
-                    x=query_img,
-                    y_m=None,  # 评估时不需要gt
-                    cat_idx=batch['class_id'] if 'class_id' in batch else None,
-                    priors=None
-                )
-                # import pdb
-                # pdb.set_trace()
-                # visualize_fewshot_seg(support_imgs[0], support_masks, query_img, output.cpu(), save_path='output/fewshot_vis2.png')
-                # output: [B, H, W] 或 [B, 1, H, W]
-                if output.dim() == 4 and output.size(1) == 1:
-                    output = output[:, 0]  # squeeze channel
-                pred_mask = torch.sigmoid(output)
-                pred_mask = (pred_mask > 0.5).float()
-                # 保证 pred_mask 和 batch['query_mask'] 形状一致
-                # pred_mask = F.interpolate(pred_mask.unsqueeze(1), size=batch['query_mask'].shape[-2:], mode='bilinear', align_corners=True)
-                pred_mask = restore_pred_mask(pred_mask.unsqueeze(1), orig_size=batch['query_mask'].shape[-2:], target_size=1024)
-                pred_mask = pred_mask.squeeze(1)
+            # if idx <= 50:
+            #     run_fss_gradcam_and_save(
+            #         model=model,
+            #         batch=batch,                 # 你的 batch，里边有 support_imgs/support_masks/query_img/query_mask/class_id
+            #         target_layers=target_layers,
+            #         save_dir="output/sam2_ver/gradcam_vis3",
+            #         basename=f"fewshot_{idx}",
+            #         use_cuda=torch.cuda.is_available(),
+            #         use_gt_as_target=True,       # 用 GT 做 CAM 的目标；改成 False 则用预测 mask
+            #         imagenet_norm=True,
+            #         # reshape_transform=reshape_transform      # 如果 target_layer 是 ViT token，请传入上面的 vit_reshape_transform
+            #         reshape_transform=None
+            #     )
+
+            output, _ = model(
+                s_x=support_imgs,
+                s_y=support_masks,
+                x=query_img,
+                y_m=None,  # 评估时不需要gt
+                cat_idx=batch['class_id'] if 'class_id' in batch else None,
+                query_clip_x = query_clip_x,
+                support_clip_features = support_clip_features,
+                query_img_f = query_img_f,
+                orig_size=torch.stack(batch['org_query_imsize'], dim=1).cpu().tolist(),
+                priors=None
+            )
+
+            # import pdb
+            # pdb.set_trace()
+            class_name = COCO_NAMES[batch['class_id']]
+            # visualize_fewshot_seg(support_imgs[0], support_masks, query_img, output.cpu(), save_path=f'output/fewshot_vis{idx}_{class_name}.png')
+            # visualize_fewshot_seg(support_imgs[0], support_masks, query_img, batch['query_mask'], save_path=f'output/fewshot_vis{idx}_{class_name}_GT.png')
+            # output: [B, H, W] 或 [B, 1, H, W]
+            if output.dim() == 4 and output.size(1) == 1:
+                output = output[:, 0]  # squeeze channel
+            pred_mask = torch.sigmoid(output)
+            pred_mask = (pred_mask > 0.5).float()
+            # 保证 pred_mask 和 batch['query_mask'] 形状一致
+            # pred_mask = F.interpolate(pred_mask.unsqueeze(1), size=batch['query_mask'].shape[-2:], mode='bilinear', align_corners=True)
+            pred_mask = restore_pred_mask(pred_mask.unsqueeze(1), orig_size=batch['query_mask'].shape[-2:], target_size=1024)
+            pred_mask = pred_mask.squeeze(1)
 
         assert pred_mask.size() == batch['query_mask'].size()
 
@@ -173,11 +236,44 @@ def visualize_fewshot_seg(support_image, support_mask, query_image, query_mask, 
     import matplotlib.pyplot as plt
     import torchvision.transforms.functional as TF
     import os
+    
+    def denormalize_image(tensor_img, mean, std):
+        """
+        将 normalize 过的图像还原为 0~255 范围的 RGB 图（float tensor -> uint8 numpy）
+        Args:
+            tensor_img: [1, 3, H, W] or [3, H, W]，值在 normalize 后的范围
+            mean, std: list of 3 float
+        Returns:
+            uint8 np.ndarray, shape [H, W, 3]
+        """
+        if tensor_img.dim() == 4:
+            tensor_img = tensor_img.squeeze(0)  # [3, H, W]
+        
+        mean = torch.tensor(mean).view(-1, 1, 1).to(tensor_img.device)
+        std = torch.tensor(std).view(-1, 1, 1).to(tensor_img.device)
+        
+        img = tensor_img * std + mean  # 还原
+        img = img.clamp(0, 1)  # 限制范围
+        img = (img * 255).byte().permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+        return img
+    
     # Squeeze and move to CPU
     support_image = support_image[0].cpu()
     support_mask = support_mask[0][0].cpu().float()
     query_image = query_image[0].cpu()
     query_mask = query_mask[0].cpu().float()
+    
+    support_image = denormalize_image(
+        tensor_img=support_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    query_image = denormalize_image(
+        tensor_img=query_image,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 
     # Normalize image if needed
     if support_image.dtype == torch.float32 and support_image.max() > 1:
@@ -235,18 +331,19 @@ def visualize_fewshot_seg(support_image, support_mask, query_image, query_mask, 
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    os.makedirs(os.path.dirname(support_overlay_path), exist_ok=True)
-    os.makedirs(os.path.dirname(query_overlay_path), exist_ok=True)
+    # os.makedirs(os.path.dirname(support_overlay_path), exist_ok=True)
+    # os.makedirs(os.path.dirname(query_overlay_path), exist_ok=True)
 
-    support_overlay_pil.save(support_overlay_path)
-    query_overlay_pil.save(query_overlay_path)
+    # support_overlay_pil.save(support_overlay_path)
+    # query_overlay_pil.save(query_overlay_path)
     
-    support_img_pil.save(support_img_path)
-    query_img_pil.save(query_img_path)
+    # support_img_pil.save(support_img_path)
+    # query_img_pil.save(query_img_path)
     
     plt.savefig(save_path)
     plt.close()
     print(f"[✓] Visualization with red mask saved to {save_path}")
+
 
 
 if __name__ == '__main__':
@@ -270,10 +367,10 @@ if __name__ == '__main__':
 
     # Dataset initialization (第一份代码的方式)
     FSSDataset.initialize(img_size=1024, datapath=args.data_root, use_original_imgsize=args.use_original_imgsize)
-    dataloader_test = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'test', args.shot)
+    dataloader_test = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'test', args.shot, collate_fn = fss_collate_fn)
 
     # Test
-    with torch.no_grad():
-        test_miou, test_fb_iou = test(model, dataloader_test, args.shot, args)
+    # with torch.no_grad():
+    test_miou, test_fb_iou = test(model, dataloader_test, args.shot, args)
     Logger.info('Fold %d mIoU: %5.2f \t FB-IoU: %5.2f' % (args.split, test_miou.item(), test_fb_iou.item()))
     Logger.info('==================== Finished Testing ====================')

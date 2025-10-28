@@ -8,6 +8,7 @@ import warnings
 from collections import OrderedDict
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from tqdm import tqdm
@@ -879,7 +880,9 @@ class SAM2VideoPredictor(SAM2Base):
         sup_preds,
         sup_obj_ptr,
         prior=None,
-        text_features = None
+        text_features = None,
+        clip_similarities = None,
+        clip_gate = None
     ):
         B = feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
@@ -978,8 +981,17 @@ class SAM2VideoPredictor(SAM2Base):
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
         pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
+        
         # pix_feat = feats[-1].permute(1, 2, 0)
         # pix_feat_with_mem = pix_feat.view(-1, self.hidden_dim, *sizes[-1])
+        # import pdb
+        # pdb.set_trace()
+        if clip_gate is not None:
+            if isinstance(clip_gate, nn.Module):
+                pix_feat_with_mem = clip_gate(pix_feat_with_mem, clip_similarities)
+            else:
+                pix_feat_with_mem = pix_feat_with_mem * clip_similarities.repeat(1, C, 1, 1)
+
 
         # sam decoder
         mask_inputs = prior

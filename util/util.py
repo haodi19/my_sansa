@@ -23,7 +23,7 @@ import torch
 from torch import nn
 import torch.backends.cudnn as cudnn
 import torch.nn.init as initer
-
+from torch.utils.data.dataloader import default_collate
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -297,3 +297,23 @@ def sum_list(list):
     for item in list:
         sum += item
     return sum
+
+def fss_collate_fn(batch):
+    """
+    batch 是 list，长度 = bs
+    其中每个元素是 __getitem__ 返回的 dict
+    """
+    elem = batch[0]
+    collated = {}
+    for key in elem:
+        if key == 'support_clip_features':
+            # 不做 stack，保留 list 结构 [bs][shot][instance_num][1,3,H,W]
+            collated[key] = [sample[key] for sample in batch]
+        else:
+            try:
+                # 能 stack 的仍然使用默认 collate
+                collated[key] = default_collate([sample[key] for sample in batch])
+            except:
+                # 比如字符串或其他不规则类型
+                collated[key] = [sample[key] for sample in batch]
+    return collated

@@ -340,7 +340,8 @@ class Hiera(nn.Module):
         # 添加适配器的起始位置（最后两层）
         # adapter_start_idx = depth - 2  # e.g., total depth - 
         # adapter_start_idx = depth - 6  # e.g., total depth - 
-        adapter_start_idx = depth - 24  # e.g., total depth - 
+        # adapter_start_idx = depth - 24  # e.g., total depth - 
+        adapter_start_idx = depth - 40  # e.g., total depth - 
         # adapter_start_idx = 0  # e.g., total depth - 
 
         for i in range(depth):
@@ -360,8 +361,8 @@ class Hiera(nn.Module):
             if use_adapter:
                 adapter = AdaptFormerAdapter(
                     d_model=dim_out,
-                    # bottleneck=64,
-                    bottleneck=384,
+                    # bottleneck= 384,
+                    bottleneck= 346 if i >= depth - 4 else 173,
                     dropout=0.1,
                     init_option="lora",
                     num_inner_layers_pre=1,

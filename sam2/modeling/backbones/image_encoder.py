@@ -114,6 +114,103 @@ def visualize_token_pca_and_save_all(
 
     print(f"✅ Saved to:\n - {orig_path}\n - {pca_path}\n - {concat_path}")
 
+def visualize_token_heatmap_and_save_all(
+    feature_map,
+    orig_image_tensor,  # [1, 3, H, W]
+    save_dir=".",
+    basename="sample",
+    mask=None,
+    show=False
+):
+    """
+    生成 token heatmap 可视化图，保存原图、热力图、叠加图。
+
+    Args:
+        feature_map (torch.Tensor): shape [1, C, H, W]
+        orig_image_tensor (torch.Tensor): [1, 3, H, W] 原图 tensor，值在 [0, 1] 或 [0, 255]
+        save_dir (str): 保存文件夹
+        basename (str): 文件名前缀，如 "dog1"
+        mask (torch.Tensor): 可选，形状 [H, W]，token 选择区域
+        show (bool): 是否可视化显示图像
+    """
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import cv2
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+    
+    def denormalize_image(tensor_img, mean, std):
+        if tensor_img.dim() == 4:
+            tensor_img = tensor_img.squeeze(0)  # [3, H, W]
+        
+        mean = torch.tensor(mean).view(-1, 1, 1).to(tensor_img.device)
+        std = torch.tensor(std).view(-1, 1, 1).to(tensor_img.device)
+        
+        img = tensor_img * std + mean  # 还原
+        img = img.clamp(0, 1)  # 限制范围
+        img = (img * 255).byte().permute(1, 2, 0).cpu().numpy()  # [H, W, 3]
+        return img
+
+    # === 1. 保存原图 ===
+    orig_img = denormalize_image(
+        tensor_img=orig_image_tensor,
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    orig_img_bgr = cv2.cvtColor(orig_img, cv2.COLOR_RGB2BGR)
+    orig_path = os.path.join(save_dir, f"{basename}_orig.png")
+    cv2.imwrite(orig_path, orig_img_bgr)
+
+    H_img, W_img = orig_img.shape[:2]
+
+    # === 2. 处理 feature map 生成 Heatmap ===
+    B, C, H, W = feature_map.shape
+    assert B == 1
+
+    # 简单方式：对通道做平均，得到 [H, W]
+    fmap = feature_map.squeeze(0)  # [C, H, W]
+    # fmap_mean = fmap.mean(0).cpu().numpy()  # [H, W]
+    fmap_mean = fmap.max(dim = 0)[0].cpu().numpy()  # [H, W]
+
+    if mask is not None:
+        mask = mask.squeeze().cpu().numpy()
+        fmap_mean = fmap_mean * (mask > 0)
+
+    # 归一化到 [0, 255]
+    fmap_norm = (fmap_mean - fmap_mean.min()) / (fmap_mean.max() - fmap_mean.min() + 1e-5)
+    fmap_norm = (fmap_norm * 255).astype(np.uint8)
+
+    # resize 到原图大小
+    fmap_up = cv2.resize(fmap_norm, (W_img, H_img), interpolation=cv2.INTER_CUBIC)
+
+    # 生成热力图 (COLORMAP_JET 更直观)
+    heatmap = cv2.applyColorMap(fmap_up, cv2.COLORMAP_JET)
+
+    # 与原图叠加
+    overlay = cv2.addWeighted(orig_img_bgr, 0.6, heatmap, 0.4, 0)
+
+    heatmap_path = os.path.join(save_dir, f"{basename}_heatmap.png")
+    overlay_path = os.path.join(save_dir, f"{basename}_overlay.png")
+    concat_path = os.path.join(save_dir, f"{basename}_concat.png")
+
+    cv2.imwrite(heatmap_path, heatmap)
+    cv2.imwrite(overlay_path, overlay)
+
+    # === 3. 拼接图像（原图 | Overlay）===
+    concat_img = np.concatenate([orig_img_bgr, overlay], axis=1)
+    cv2.imwrite(concat_path, concat_img)
+
+    # === 4. 显示（可选）===
+    if show:
+        plt.imshow(cv2.cvtColor(concat_img, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.title("Original | Heatmap Overlay")
+        plt.show()
+
+    print(f"✅ Saved to:\n - {orig_path}\n - {heatmap_path}\n - {overlay_path}\n - {concat_path}")
+
+
 class ImageEncoder(nn.Module):
     def __init__(
         self,
@@ -138,11 +235,20 @@ class ImageEncoder(nn.Module):
         # visualize_token_pca_and_save_all(
         #     feature_map=features[2].to(dtype=torch.float32),
         #     orig_image_tensor=sample,
-        #     save_dir="./vis3",
+        #     save_dir="./vis5",
         #     basename="dog1",
         #     show=False  # 可视化看看效果
         # )
         
+        # visualize_token_heatmap_and_save_all(
+        #     feature_map=features[2].to(dtype=torch.float32),
+        #     orig_image_tensor=sample,
+        #     save_dir="./vis4",
+        #     basename="dog1",
+        #     show=False  # 可视化看看效果
+        # )
+
+
         if self.scalp > 0:
             # Discard the lowest resolution features
             features, pos = features[: -self.scalp], pos[: -self.scalp]

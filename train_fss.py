@@ -33,7 +33,7 @@ from util import config
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from util.util import check_makedirs, fix_bn, get_model_para_number, get_save_path, poly_learning_rate, setup_seed
+from util.util import check_makedirs, fix_bn, fss_collate_fn, get_model_para_number, get_save_path, poly_learning_rate, setup_seed
 # from util.util import AverageMeter as OldAverageMeter
 
 cv2.ocl.setUseOpenCL(False)
@@ -136,6 +136,29 @@ def restore_pred_mask(pred_mask, orig_size, target_size):
     pred_mask_restored = F.interpolate(pred_mask_cropped, size=(orig_h, orig_w), mode='bilinear', align_corners=True)
     return pred_mask_restored  # shape: [B, 1, orig_h, orig_w]
 
+# === 检查函数 ===
+def check_param_consistency(model, optimizer):
+    # 收集 optimizer 中的参数id
+    optimizer_params = set()
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            optimizer_params.add(id(p))
+    
+    inconsistent = []
+    for name, param in model.named_parameters():
+        in_optim = id(param) in optimizer_params
+        if param.requires_grad and not in_optim:
+            inconsistent.append((name, "requires_grad=True but not in optimizer"))
+        elif not param.requires_grad and in_optim:
+            inconsistent.append((name, "requires_grad=False but in optimizer"))
+    
+    if inconsistent:
+        print("⚠️ Inconsistencies found:")
+        for name, msg in inconsistent:
+            print(f" - {name}: {msg}")
+    else:
+        print("✅ All parameters consistent!")
+
 def main_process():
     return not args.distributed or (args.distributed and (args.local_rank == 0))
 
@@ -210,6 +233,10 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
         s_input = batch['support_imgs']
         s_mask = batch['support_masks']
         cat_idx = batch['class_id'] if 'class_id' in batch else None
+        
+        query_clip_x = batch['query_clip_x']
+        support_clip_features = batch['support_clip_features']
+        query_img_f = batch['query_img_f']
 
         # data_time.update(time.time() - end)
         current_iter = epoch * len(train_loader) + i + 1
@@ -219,7 +246,8 @@ def train(train_loader, val_loader, model, optimizer, epoch, scaler, args, best_
                            index_split=args.index_split, warmup=args.warmup, warmup_step=len(train_loader) // 2)
 
         with autocast():
-            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, cat_idx=cat_idx)
+            output, main_loss, aux_loss1, aux_loss2, dice_loss_val, bce_loss_val = model(s_x=s_input, s_y=s_mask, x=input, y_m=target, query_clip_x = query_clip_x,
+                support_clip_features = support_clip_features, query_img_f = query_img_f, orig_size= torch.stack(batch['org_query_imsize'], dim=1).cpu().tolist(), cat_idx=cat_idx)
             loss = main_loss
 
         optimizer.zero_grad()
@@ -311,8 +339,8 @@ def main():
 
     # ======== 数据加载 ==========
     FSSDataset.initialize(img_size=1024, datapath=args.data_root, use_original_imgsize=args.ori_resize)
-    train_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size, args.nworker, args.split, 'trn', args.shot)
-    val_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'val', args.shot)
+    train_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size, args.nworker, args.split, 'trn', args.shot, collate_fn = fss_collate_fn)
+    val_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'val', args.shot, collate_fn = fss_collate_fn)
 
     # ======== 评估器/可视化器 ==========
     Evaluator.initialize()
@@ -326,13 +354,14 @@ def main():
     #     print(f"Name: {name}, Shape: {param.shape}, Requires grad: {param.requires_grad}")
     # exit(0)
     
-    # # 获取 optimizer 中所有参数的 id
+    # 获取 optimizer 中所有参数的 id
     # optim_param_ids = set(id(p) for group in optimizer.param_groups for p in group['params'])
     # print("\n=== Trainable parameters in optimizer ===")
     # for name, param in model.named_parameters():
     #     if id(param) in optim_param_ids:
     #         print(name)
     # print("=== End of trainable parameters ===\n")
+    # check_param_consistency(model, optimizer)
     # exit(0)
 
     for epoch in range(args.start_epoch, args.epochs):
