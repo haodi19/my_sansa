@@ -323,7 +323,7 @@ class OneModel(nn.Module):
         self.sam2_config = args.sam2_config
         self.sam2 = build_sam2_video_predictor(config_file=self.sam2_config, ckpt_path=self.sam2_weight, mode=None)
         
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to('cuda')
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
         
         self.resize_pad = ResizeLongSideAndPad(size=1024, fill=0)
         
@@ -424,6 +424,7 @@ class OneModel(nn.Module):
             # 全部参数先冻结
             for name, param in model.named_parameters():
                 if 'adapter' not in name and 'clip_gate' not in name:
+                # if 'adapter' not in name:
                     param.requires_grad = False
                     
             # for param in model.sam2.sam_mask_decoder.parameters():
@@ -932,8 +933,8 @@ class OneModel(nn.Module):
         # s_y:torch.Size([bs, shot, H, W])
         # y_m:torch.Size([bs, H, W])
         b, _, h, w = x.size()  # b=1, 3, H, W
-        # with torch.autocast("cuda", dtype=torch.bfloat16):
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+        # with torch.autocast("cuda", dtype=torch.float32):
             s_x = s_x.view(-1, 3, h, w)  # b*s, 3, 512, 512
             # remove padding (255)
             s_mask = s_y.clone().float()
@@ -975,11 +976,11 @@ class OneModel(nn.Module):
             # clip_similarities: 转成torch.Size([bs, shot, 64, 64])
             clip_similarities = torch.stack([torch.stack(inner, dim=0) for inner in clip_similarities], dim=0)
             
-            with torch.no_grad():
+            # with torch.no_grad():
             # obtain query and support features        
-                _, _, qry_feats, qry_poss, qry_sizes = self.sam2.get_image_feature_batch(x)    
-                _, _, sup_feats, sup_poss, sup_sizes = self.sam2.get_image_feature_batch(s_x)
-            # _, _, qry_feats, qry_poss, qry_sizes = self.sam2.get_image_feature_batch(x)
+            _, _, qry_feats, qry_poss, qry_sizes = self.sam2.get_image_feature_batch(x)    
+            _, _, sup_feats, sup_poss, sup_sizes = self.sam2.get_image_feature_batch(s_x)
+
             # qry_feats/sup_feats: list,多尺度特征
             # qry_feats[0]: torch.Size([65536, 1, 32])
             # qry_feats[1]: torch.Size([16384, 1, 64])
@@ -1046,7 +1047,9 @@ class OneModel(nn.Module):
                 qry_feats, qry_poss, qry_sizes,
                 sup_fg_mem_feats, sup_fg_mem_poss, sup_fg_preds, sup_fg_obj_ptrs, text_features = text_features,
                 clip_similarities = clip_similarities.squeeze(1),
+                # clip_similarities = None,
                 clip_gate = self.clip_gate
+                # clip_gate = 'multi'
             )
 
             output_query = output_query.squeeze(1)

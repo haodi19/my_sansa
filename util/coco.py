@@ -88,6 +88,25 @@ class DatasetCOCO(Dataset):
             value=(0, 0, 0)
         )
 
+        # 2) 如果正方形仍然太小（≤3），再 pad 到恰好 4×4，避免 (1,1,3)/(2,2,3)/(3,3,3) 触发通道歧义
+        h2, w2, _ = crop_padded.shape  # 这里已确保 h2==w2
+        if h2 <= 3:  # 同时 w2==h2
+            need = 4 - h2  # 需要增加的总边数
+            # 对称分配：上/左分一半，剩余给下/右
+            extra_top = need // 2
+            extra_bottom = need - extra_top
+            extra_left = need // 2
+            extra_right = need - extra_left
+            crop_padded = cv2.copyMakeBorder(
+                crop_padded,
+                extra_top, extra_bottom,
+                extra_left, extra_right,
+                cv2.BORDER_CONSTANT,
+                value=(0, 0, 0)
+            )
+            print("chingching", h2,w2,crop_padded.shape)
+            # 现在保证为 (4,4,3)
+
         # ✅ 使用 CLIP processor（不改属性）
         if processor is None:
             img_f = (crop_padded.astype(np.float32) / 255.0).clip(0, 1)

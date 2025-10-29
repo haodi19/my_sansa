@@ -986,11 +986,11 @@ class SAM2VideoPredictor(SAM2Base):
         # pix_feat_with_mem = pix_feat.view(-1, self.hidden_dim, *sizes[-1])
         # import pdb
         # pdb.set_trace()
-        if clip_gate is not None:
+        if clip_similarities is not None and clip_gate is not None:
             if isinstance(clip_gate, nn.Module):
                 pix_feat_with_mem = clip_gate(pix_feat_with_mem, clip_similarities)
             else:
-                pix_feat_with_mem = pix_feat_with_mem * clip_similarities.repeat(1, C, 1, 1)
+                pix_feat_with_mem = pix_feat_with_mem * clip_similarities.unsqueeze(1).repeat(1, C, 1, 1)
 
 
         # sam decoder

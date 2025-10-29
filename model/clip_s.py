@@ -302,7 +302,7 @@ def get_clip_similarity(clip_model, xA, xB, sim_mode = "max", smooth = 0.0, quer
         sA = key_smoothing(sA, keyA, HtA, WtA, alpha=ks_alpha, ksize=3)
 
     # 6) 还原到 (HtA, WtA) 网格并归一化到 [0,1]
-    sim_map = sA.view(HtA, WtA).detach().cpu().numpy().astype(np.float32)
+    sim_map = sA.view(HtA, WtA).detach().to(torch.float32).cpu().numpy().astype(np.float32)
     # 线性归一化（保持相对对比）
     vmin, vmax = np.percentile(sim_map, 1), np.percentile(sim_map, 99)
     sim_map = (sim_map - vmin) / max(1e-6, (vmax - vmin))
