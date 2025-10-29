@@ -173,14 +173,23 @@ def test(model, dataloader, nshot, args):
                 support_imgs = batch['support_imgs']  # [B, shot, C, H, W]
                 support_masks = batch['support_masks']  # [B, shot, 1, H, W]
                 query_img = batch['query_img']  # [B, C, H, W]
+                query_clip_x = batch['query_clip_x']
+                support_clip_features = batch['support_clip_features']
+                query_img_f = batch['query_img_f']
+                
                 output, _ = model(
                     s_x=support_imgs,
                     s_y=support_masks,
                     x=query_img,
                     y_m=None,
                     cat_idx=batch['class_id'] if 'class_id' in batch else None,
+                    query_clip_x = query_clip_x,
+                    support_clip_features = support_clip_features,
+                    query_img_f = query_img_f,
+                    orig_size=torch.stack(batch['org_query_imsize'], dim=1).cpu().tolist(),
                     priors=None
                 )
+                
                 if output.dim() == 4 and output.size(1) == 1:
                     output = output[:, 0]
                 pred_mask = torch.sigmoid(output)
