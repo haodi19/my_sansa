@@ -264,6 +264,8 @@ class DatasetCOCO(Dataset):
         return mask
 
     def load_frame(self):
+        # state = np.random.get_state()
+        # print(state[1][0], torch.distributed.get_rank())  # 输出状态数组的第一个元素（通常和 seed 有关）
         class_sample = np.random.choice(self.class_ids, 1, replace=False)[0]
         query_name = np.random.choice(self.img_metadata_classwise[class_sample], 1, replace=False)[0]
         query_img = Image.open(os.path.join(self.base_path, query_name)).convert('RGB')

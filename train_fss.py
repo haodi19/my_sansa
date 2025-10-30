@@ -63,10 +63,6 @@ def get_model(args):
         model.freeze_modules(model, type=args.training_type)
 
     if args.distributed:
-        # Initialize Process Group
-        dist.init_process_group(backend='nccl')
-        print('args.local_rank: ', args.local_rank)
-        torch.cuda.set_device(args.local_rank)
         device = torch.device('cuda', args.local_rank)
         model.to(device)
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -331,16 +327,30 @@ def main():
     args = get_parser()
     args.distributed = torch.cuda.device_count() > 1
 
+    # ⚠️ 这里先初始化分布式，否则 get_rank() 会报错
+    if args.distributed:
+        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device('cuda', args.local_rank)
+    else:
+        device = torch.device('cuda')
+
+    # ====== 每个 rank 打印一次信息 ======
+    rank = dist.get_rank() if args.distributed else 0
     if main_process():
         print(args)
         Logger.initialize(args, training=True)
         
+    # ✅ 每个 rank 用不同的 seed（防止各卡数据重复）
     if args.manual_seed is not None:
-        setup_seed(args.manual_seed, args.seed_deterministic)
-
+        rank_seed = args.manual_seed + rank
+        utils.fix_randseed(rank_seed)
+        if rank == 0:
+            print(f"Base seed: {args.manual_seed}, rank seed: {rank_seed}")
+    
     if main_process():
         Logger.info("=> creating model ...")
-
+        
     model, optimizer = get_model(args)
 
     if args.viz and main_process():
@@ -348,7 +358,7 @@ def main():
 
     # ======== 数据加载 ==========
     FSSDataset.initialize(img_size=1024, datapath=args.data_root, use_original_imgsize=args.ori_resize)
-    train_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size, args.nworker, args.split, 'trn', args.shot, collate_fn = fss_collate_fn)
+    train_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size, args.nworker, args.split, 'trn', args.shot, collate_fn = fss_collate_fn, rank=rank)
     val_loader = FSSDataset.build_dataloader(args.data_set, args.batch_size_val, args.nworker, args.split, 'val', args.shot, collate_fn = fss_collate_fn)
 
     # ======== 评估器/可视化器 ==========

@@ -10,6 +10,7 @@ from util.pascal import DatasetPASCAL
 
 import torch
 import numpy as np
+import random
 class ToTensor255:
     def __call__(self, img):
         return torch.from_numpy(np.array(img)).permute(2, 0, 1).float()  # shape: (C, H, W)
@@ -39,14 +40,23 @@ class FSSDataset:
                                             ])
 
     @classmethod
-    def build_dataloader(cls, benchmark, bsz, nworker, fold, split, shot=1, collate_fn = None):
+    def build_dataloader(cls, benchmark, bsz, nworker, fold, split, shot=1, collate_fn = None, rank = 0):
         # Force randomness during training for diverse episode combinations
         # Freeze randomness during testing for reproducibility
         shuffle = split == 'trn'
         nworker = nworker if split == 'trn' else 0
 
+        g = torch.Generator()
+        g.manual_seed(0 + rank)
+        
+        def worker_init_fn(worker_id):
+            base_seed = 0
+            seed = base_seed + rank * 1000 + worker_id
+            np.random.seed(seed)
+            random.seed(seed)
+
         dataset = cls.datasets[benchmark](cls.datapath, fold=fold, transform=cls.transform, split=split, shot=shot, use_original_imgsize=cls.use_original_imgsize)
-        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker, collate_fn=collate_fn)
+        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker, collate_fn=collate_fn, worker_init_fn = worker_init_fn, generator=g)
 
         return dataloader
     
